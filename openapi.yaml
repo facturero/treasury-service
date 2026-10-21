@@ -1,0 +1,745 @@
+openapi: 3.0.3
+info:
+  title: treasury-service
+  version: 1.0.0
+  description: >-
+    Tesorería (plugin `finance.accounts_receivable_payable`): submayor de cuentas por cobrar, condiciones de crédito por
+    cliente, saldos iniciales de cartera, antigüedad y estado de cuenta. Todas las rutas van detrás del gateway con prefijo
+    `/treasury` (el gateway NO lo quita) y exigen el módulo contratado. Importes SIEMPRE en centavos enteros; fechas de
+    emisión y de vencimiento `AAAA-MM-DD` (fechas de calendario, sin conversión UTC). El saldo de una partida NUNCA es una
+    columna: se deriva de sumar sus aplicaciones, por eso `balanceCents` siempre cuadra con lo que la respalda. El vencimiento
+    lo calcula el servidor con los días de crédito vigentes al emitir; lo que mande el cliente se compara, no se acepta.
+    Errores de negocio: `{ code, message, details? }`, con el código en cada respuesta.
+servers:
+  - url: http://localhost:3018
+tags:
+  - name: Cartera
+  - name: Antigüedad de cartera
+  - name: Estado de cuenta
+  - name: Condiciones de crédito
+  - name: Saldos iniciales
+  - name: Cobros
+security:
+  - gatewayHeaders: []
+paths:
+  /health:
+    get:
+      summary: Estado del servicio (sin prefijo ni contexto)
+      security: []
+      responses:
+        '200': { description: ok }
+  /treasury/receivables:
+    get:
+      tags: [Cartera]
+      summary: Lista paginada de partidas de cartera
+      description: >-
+        Permiso: `receivable:read`. `q` busca en el número de documento y en el nombre del cliente. `overdueOnly=true`
+        deja solo las partidas vencidas ANTES de `asOf` (si no viene, el servidor usa el día de hoy en el huso de la
+        organización, no el de quien pide). Devuelve `asOf` con la fecha de corte usada para el filtro.
+      x-permission: receivable:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, description: 'Una o varias, separadas por coma: `open,partial`', schema: { type: string, example: 'open,partial' } }
+        - { name: overdueOnly, in: query, schema: { type: boolean } }
+        - { name: asOf, in: query, description: 'Fecha de corte `AAAA-MM-DD`', schema: { type: string, format: date } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ReceivablePage' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/receivables/aging:
+    get:
+      tags: [Antigüedad de cartera]
+      summary: Antigüedad de la cartera (corriente y por tramos de vencimiento)
+      description: >-
+        Permiso: `receivable:read`. Corriente, 1–30, 31–60, 61–90 y más de 90 días vencidos, por cliente y en total.
+        Solo cuentan partidas con saldo POSITIVO: una anulada con una nota de crédito encima deja saldo en contra y no es
+        «cartera vencida». La fecha de corte sale del servidor salvo que venga en `asOf`.
+      x-permission: receivable:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: asOf, in: query, description: 'Fecha de corte `AAAA-MM-DD`', schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AgingReport' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/receivables/export:
+    get:
+      tags: [Exportar]
+      summary: Exporta la cartera a CSV (mismos filtros que el listado, sin paginar)
+      description: >-
+        Permiso: `receivable:export` (aparte de `receivable:read`: es dato que SALE del sistema). Cada archivo emite
+        `treasury.report.exported` con el reporte, los filtros aplicados, el número de filas y quién lo exportó. Más de
+        20.000 filas se rechaza (422): se pide acotar por fechas o estado. Los textos que empiezan por `= + - @` se
+        neutralizan (inyección de fórmulas en hojas de cálculo).
+      x-permission: receivable:export
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string }, description: 'Uno o varios estados separados por coma' }
+        - { name: overdueOnly, in: query, schema: { type: boolean } }
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: lang, in: query, description: 'Idioma de los encabezados', schema: { type: string, enum: [es, en, fr], default: es } }
+      responses:
+        '200':
+          description: 'Archivo CSV (UTF-8 con BOM, coma, CRLF). Cabecera `Content-Disposition: attachment`, `Cache-Control: no-store`.'
+          content: { text/csv: { schema: { type: string } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/receivables/aging/export:
+    get:
+      tags: [Exportar]
+      summary: Exporta la antigüedad de la cartera a CSV (una fila por cliente y una de totales)
+      description: 'Permiso: `receivable:export`. Emite `treasury.report.exported`.'
+      x-permission: receivable:export
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+        - { name: lang, in: query, description: 'Idioma de los encabezados', schema: { type: string, enum: [es, en, fr], default: es } }
+      responses:
+        '200':
+          description: 'Archivo CSV (UTF-8 con BOM, coma, CRLF). Cabecera `Content-Disposition: attachment`, `Cache-Control: no-store`.'
+          content: { text/csv: { schema: { type: string } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/customers/{id}/statement/export:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Exportar]
+      summary: Exporta el estado de cuenta de un cliente a CSV
+      description: 'Permiso: `receivable:export`. Lleva el encabezado, sus partidas y los totales (debe, saldo a favor, neto y anticipos de cobros). Emite `treasury.report.exported` con el `customerId`.'
+      x-permission: receivable:export
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+        - { name: lang, in: query, description: 'Idioma de los encabezados', schema: { type: string, enum: [es, en, fr], default: es } }
+      responses:
+        '200':
+          description: 'Archivo CSV (UTF-8 con BOM, coma, CRLF). Cabecera `Content-Disposition: attachment`, `Cache-Control: no-store`.'
+          content: { text/csv: { schema: { type: string } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/receivables/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Cartera]
+      summary: Una partida con su historial de aplicaciones
+      description: >-
+        Permiso: `receivable:read`. `applications` es todo lo que se le ha acreditado, en orden: notas de crédito
+        aplicadas. Una nota de crédito que entró como saldo a favor y se aplicó después también aparece (al aplicarse se
+        escribe su `credit_application`).
+      x-permission: receivable:read
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ReceivableDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No existe (o es de otra organización) }
+  /treasury/customers/{id}/statement:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Estado de cuenta]
+      summary: Estado de cuenta de un cliente
+      description: >-
+        Permiso: `receivable:read`. Sus partidas, lo que se le ha aplicado y los saldos a favor. `netCents` es lo que el
+        libro mayor de contabilidad muestra como cuentas por cobrar de ese cliente: la deuda de las partidas menos el
+        saldo a favor que todavía no se aplicó. La fecha de corte sale del servidor salvo que venga en `asOf`.
+      x-permission: receivable:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: asOf, in: query, description: 'Fecha de corte `AAAA-MM-DD`', schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerStatement' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/customers/{id}/terms:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Condiciones de crédito]
+      summary: Condiciones de crédito del cliente
+      description: >-
+        Permiso: `receivable:read`. `null` cuando todavía no se le han fijado (equivalen a 0 días y sin cupo: el
+        valor por defecto acordado con el dueño es crédito de 0 días contados y sin cupo).
+      x-permission: receivable:read
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerTerms' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Condiciones de crédito]
+      summary: Fija las condiciones de crédito del cliente
+      description: >-
+        Permiso: `customer_terms:manage`. Los días y el cupo NO reescriben las partidas ya abiertas: se leen al abrir
+        cada factura, así que cambiar el plazo de un cliente hoy no reescribe el vencimiento de lo ya emitido (si lo
+        hiciera, la antigüedad de la cartera mentiría hacia atrás). El evento `treasury.customer_terms.updated` lleva
+        valor anterior y valor nuevo.
+      x-permission: customer_terms:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CustomerTermsInput' } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerTerms' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'CONCURRENT_UPDATE: otra persona cambió las condiciones a la vez' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/opening-balances:
+    post:
+      tags: [Saldos iniciales]
+      summary: Carga la cartera inicial de la organización (una sola vez por fecha de corte)
+      description: >-
+        Permiso: `opening_balance:load`. La cartera nace vacía: las facturas ya emitidas no se recuperan solas, y esta es
+        la única vía honesta para empezar con lo que el cliente ya debía. Cada línea abre una partida `initial_balance`
+        con su `source_id` = `${loadId}:${indice}`. La moneda la dice la contabilidad de la organización: si no está
+        configurada, 422 (no se inventa una moneda y la prueba de oro no cuadraría nunca). `dueDate` es opcional y
+        obligatorio si viene anterior a `issueDate`; sin él se calcula con los días de crédito del cliente. Todo o nada:
+        si una línea falla no se guarda ninguna. 409 si ya había una carga con esa fecha de corte.
+        Cada `customerId` se comprueba contra customer-service (una vez por cliente): uno que no existe en la organización es
+        422 con `details[].field = lines[i].customerId`; el nombre y la identificación que se guardan son los del catálogo,
+        no los que mande el cliente. Esta carga NO genera asiento contable: para que la cartera cuadre con el libro mayor,
+        contabilidad necesita su asiento de apertura por el mismo total.
+      x-permission: opening_balance:load
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/OpeningBalanceInput' } } }
+      responses:
+        '201': { description: Creada, content: { application/json: { schema: { $ref: '#/components/schemas/OpeningBalanceLoad' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'OPENING_BALANCE_ALREADY_LOADED: ya hay una carga con esa fecha de corte' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502': { description: 'CATALOG_UNAVAILABLE: contabilidad (moneda base) o customer-service (clientes) no respondieron; nunca se toma por «no existe»' }
+  /treasury/receipts:
+    get:
+      tags: [Cobros]
+      summary: Lista paginada de cobros
+      description: Permiso `receipt:read`. Cada cobro trae `lineCount` (a cuántas deudas se aplicó). `status` admite varios separados por coma.
+      x-permission: receipt:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 100 }, description: 'Número (RC-…), referencia o nombre del cliente' }
+        - { name: customerId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string }, description: 'draft,posted,voided (varios por coma)' }
+        - { name: from, in: query, schema: { type: string }, description: 'Fecha del cobro desde, AAAA-MM-DD' }
+        - { name: to, in: query, schema: { type: string }, description: 'Fecha del cobro hasta, AAAA-MM-DD' }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        '200': { description: Página de cobros, content: { application/json: { schema: { $ref: '#/components/schemas/ReceiptPage' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Cobros]
+      summary: Crea un cobro en borrador
+      description: >-
+        Permiso `receipt:create`. No toca saldos ni gasta número: el `RC-AAAA-NNNNNN` se asigna al contabilizar. Lo cobrado de más
+        que las deudas es el excedente y queda como anticipo del cliente. En cheque y transferencia la `reference` es obligatoria.
+        Avisa pronto de lo que ya se sabe que fallará (deuda de otro cliente, saldo insuficiente, anticipo ajeno), pero la
+        comprobación que vale es la de contabilizar. El cliente se consulta en customer-service: no existe → 422; servicio caído → 502.
+      x-permission: receipt:create
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReceiptCreateInput' } } }
+      responses:
+        '201': { description: Borrador creado, content: { application/json: { schema: { $ref: '#/components/schemas/Receipt' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502': { description: 'CATALOG_UNAVAILABLE: contabilidad o customer-service no respondieron' }
+  /treasury/receipts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Cobros]
+      summary: Un cobro con sus líneas
+      x-permission: receipt:read
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: El cobro, content: { application/json: { schema: { $ref: '#/components/schemas/Receipt' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: 'RECEIPT_NOT_FOUND (también si es de otra organización)' }
+    put:
+      tags: [Cobros]
+      summary: Edita un borrador
+      description: >-
+        Permiso `receipt:create`. Solo un borrador se edita (409 `INVALID_RECEIPT_STATE` si ya está contabilizado o anulado:
+        se anula y se rehace). `expectedVersion` opcional: si no coincide, 409.
+      x-permission: receipt:create
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReceiptUpdateInput' } } }
+      responses:
+        '200': { description: Borrador actualizado, content: { application/json: { schema: { $ref: '#/components/schemas/Receipt' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: RECEIPT_NOT_FOUND }
+        '409': { description: INVALID_RECEIPT_STATE o versión desfasada }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/receipts/{id}/post:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Cobros]
+      summary: Contabiliza un cobro
+      description: >-
+        Permiso `receipt:create` (no existe un `receipt:post`: sería un permiso de adorno). Aplica a las deudas con sus filas
+        BLOQUEADAS (si el saldo ya no alcanza, 422 con la línea y no se deja nada), consume anticipos, abre el anticipo del
+        excedente, asigna `RC-AAAA-NNNNNN` y publica `treasury.receipt.posted`. Idempotente: contabilizar uno ya contabilizado
+        devuelve el mismo cobro con 200 sin cobrar dos veces.
+      x-permission: receipt:create
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: Cobro contabilizado, content: { application/json: { schema: { $ref: '#/components/schemas/Receipt' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: RECEIPT_NOT_FOUND }
+        '409': { description: INVALID_RECEIPT_STATE (anulado) }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/receipts/{id}/void:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Cobros]
+      summary: Anula un cobro contabilizado, con motivo
+      description: >-
+        Permiso `receipt:void` (solo el Administrador: quien cobra no anula lo suyo sin rastro). Nada se borra: las aplicaciones
+        se marcan anuladas y el saldo de las deudas vuelve a lo que era. 409 `RECEIPT_ADVANCE_IN_USE` si otro cobro ya consumió
+        el anticipo de este (hay que anular antes ese). 409 `INVALID_RECEIPT_STATE` si es un borrador. Idempotente.
+      x-permission: receipt:void
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReceiptVoidInput' } } }
+      responses:
+        '200': { description: Cobro anulado, content: { application/json: { schema: { $ref: '#/components/schemas/Receipt' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: RECEIPT_NOT_FOUND }
+        '409': { description: RECEIPT_ADVANCE_IN_USE o INVALID_RECEIPT_STATE }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/reminders/settings:
+    get:
+      tags: [Recordatorios]
+      summary: Configuración de los recordatorios de cobro
+      description: >-
+        Permiso: `reminder:manage` (solo el Administrador). Un recordatorio es un correo al CLIENTE de la organización
+        (comunicación externa): nace APAGADO y solo sale si el Administrador lo enciende.
+      x-permission: reminder:manage
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ReminderSettings' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Recordatorios]
+      summary: Enciende, apaga o ajusta los recordatorios
+      description: >-
+        Permiso: `reminder:manage`. `repeatEveryDays` mínimo 7 (un recordatorio por partida y semana como máximo).
+        Emite `treasury.reminder_settings.updated` con el valor anterior y el nuevo.
+      x-permission: reminder:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ReminderSettingsInput' } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ReminderSettings' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/reminders/preview:
+    get:
+      tags: [Recordatorios]
+      summary: A quién se le avisaría hoy (sin enviar nada)
+      description: >-
+        Permiso: `reminder:manage`. Funciona aunque los recordatorios estén apagados: sirve para decidir antes de
+        encenderlos. El correo no viaja completo, solo una pista (`ma***@dominio`).
+      x-permission: reminder:manage
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ReminderPreview' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502': { description: 'CATALOG_UNAVAILABLE: customer-service no responde' }
+  /treasury/reminders/run:
+    post:
+      tags: [Recordatorios]
+      summary: Envía los recordatorios de hoy ahora (sin esperar al proceso diario)
+      description: >-
+        Permiso: `reminder:manage`. Un evento `treasury.receivable.overdue` por cliente. Idempotente por (partida, día):
+        repetirlo el mismo día no avisa de nuevo. Con los recordatorios APAGADOS responde 409 `REMINDERS_DISABLED`.
+      x-permission: reminder:manage
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ReminderRun' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'REMINDERS_DISABLED: los recordatorios están apagados' }
+        '502': { description: 'CATALOG_UNAVAILABLE: customer-service u organization-service no responden' }
+components:
+  securitySchemes:
+    gatewayHeaders:
+      type: apiKey
+      in: header
+      name: X-Organization-Id
+      description: El gateway inyecta `X-Organization-Id`, `X-User-Id`, `X-Country-Code` y `X-Permissions`; el servicio no ve el JWT.
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+  responses:
+    BadRequest:
+      description: El cuerpo no es JSON válido
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Sin contexto de organización o de usuario (el gateway no autenticó la petición)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: 'Sin el permiso que exige la ruta (código `FORBIDDEN`)'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: La petición no es válida
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      description: 'Formato de error del servicio: el `code` es estable y el `message` es para una persona.'
+      properties:
+        code: { type: string, example: VALIDATION_ERROR }
+        message: { type: string }
+        details:
+          type: array
+          items: { type: object, properties: { field: { type: string }, message: { type: string } } }
+    ReceivableStatus:
+      type: string
+      enum: [open, partial, paid, written_off, cancelled]
+      description: >-
+        `cancelled` y `written_off` son terminales. Las demás se DERIVAN de lo aplicado: sin aplicaciones `open`, con
+        parte `partial`, con todo `paid`.
+    CreditApplication:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        receivableId: { type: string, format: uuid }
+        sourceType: { type: string, enum: [credit_note, receipt] }
+        sourceId: { type: string, format: uuid }
+        documentNumber: { type: string, nullable: true }
+        appliedCents: { type: integer, description: Importe en centavos enteros }
+        appliedAt: { type: string, format: date }
+        createdAt: { type: string, format: date-time }
+    Receivable:
+      type: object
+      description: Una partida de cartera. El saldo se deriva, no se guarda, por eso los tres importes salen siempre coherentes.
+      properties:
+        id: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        customerIdentification: { type: string, nullable: true, description: Copia del evento de facturación }
+        sourceType: { type: string, enum: [invoice, credit_note, initial_balance] }
+        sourceId: { type: string, description: 'Id del comprobante que originó la partida (la factura) o `${loadId}:${indice}` en un saldo inicial' }
+        documentNumber: { type: string, nullable: true }
+        issueDate: { type: string, format: date, description: 'Fecha de calendario, sin conversión UTC' }
+        dueDate: { type: string, format: date, description: issueDate + los días de crédito vigentes al emitir }
+        currencyCode: { type: string, example: USD }
+        originalCents: { type: integer, minimum: 0, description: Importe original en centavos }
+        appliedCents: { type: integer, minimum: 0, description: 'Suma de lo aplicado (notas de crédito; en el bloque B, también cobros)' }
+        balanceCents: { type: integer, description: 'Saldo pendiente derivado: original − aplicado (o −aplicado si está anulada)' }
+        status: { $ref: '#/components/schemas/ReceivableStatus' }
+        version: { type: integer, description: Versión para la actualización optimista (409 si otra persona la cambió) }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ReceivableDetail:
+      allOf:
+        - $ref: '#/components/schemas/Receivable'
+        - type: object
+          properties:
+            applications:
+              type: array
+              items: { $ref: '#/components/schemas/CreditApplication' }
+    ReceivablePage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Receivable' } }
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+        asOf: { type: string, format: date, description: Fecha de corte usada para el filtro de vencidas }
+    CustomerTermsInput:
+      type: object
+      required: [creditDays, creditLimitCents]
+      properties:
+        creditDays: { type: integer, minimum: 0, maximum: 365 }
+        creditLimitCents:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: '`null` (o la ausencia del valor) = sin cupo. El cupo se guarda y se muestra; bloquear la facturación es una fase posterior.'
+        customerName: { type: string, maxLength: 300, nullable: true, description: 'Solo etiqueta de lectura; si falta, se conserva el que había' }
+    CustomerTerms:
+      type: object
+      nullable: true
+      description: '`null` cuando al cliente todavía no se le han fijado condiciones.'
+      properties:
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        creditDays: { type: integer, minimum: 0, maximum: 365 }
+        creditLimitCents: { type: integer, minimum: 0, nullable: true }
+        updatedBy: { type: string, format: uuid }
+        updatedAt: { type: string, format: date-time }
+    CustomerAdvance:
+      type: object
+      description: Saldo a favor del cliente (una nota de crédito sin factura a la que aplicarla).
+      properties:
+        id: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        customerIdentification: { type: string, nullable: true }
+        origin: { type: string, enum: [credit_note, receipt] }
+        originId: { type: string, format: uuid }
+        relatedInvoiceId: { type: string, format: uuid, nullable: true, description: 'Si viene, solo se aplica a esa factura; si no, a la próxima del cliente' }
+        documentNumber: { type: string, nullable: true }
+        currencyCode: { type: string, example: USD }
+        originalCents: { type: integer, minimum: 0 }
+        appliedCents: { type: integer, minimum: 0 }
+        balanceCents: { type: integer, description: Pendiente del saldo a favor }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CustomerStatement:
+      type: object
+      properties:
+        customerId: { type: string, format: uuid }
+        asOf: { type: string, format: date }
+        receivableCents: { type: integer, description: Suma de los saldos de las partidas }
+        advanceCents: { type: integer, description: Suma de los saldos a favor }
+        netCents: { type: integer, description: 'receivableCents − advanceCents: lo que el libro mayor muestra como cuentas por cobrar' }
+        receivables: { type: array, items: { $ref: '#/components/schemas/Receivable' } }
+        applications: { type: array, items: { $ref: '#/components/schemas/CreditApplication' } }
+        advances: { type: array, items: { $ref: '#/components/schemas/CustomerAdvance' } }
+    AgingBucket:
+      type: object
+      properties:
+        currentCents: { type: integer, description: Todavía no vencida }
+        days1To30Cents: { type: integer }
+        days31To60Cents: { type: integer }
+        days61To90Cents: { type: integer }
+        daysOver90Cents: { type: integer }
+        totalCents: { type: integer, description: Suma de los cinco tramos }
+    AgingReport:
+      type: object
+      description: 'Los clientes vienen de mayor a menor `totalCents`: en pantalla se cobra lo grande primero.'
+      properties:
+        asOf: { type: string, format: date }
+        totals: { $ref: '#/components/schemas/AgingBucket' }
+        customers:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/AgingBucket'
+              - type: object
+                properties:
+                  customerId: { type: string, format: uuid }
+                  customerName: { type: string }
+    OpeningBalanceInput:
+      type: object
+      required: [cutoffDate, reason, lines]
+      properties:
+        cutoffDate: { type: string, format: date, description: 'Fecha de corte; una sola carga por (organización, fecha)' }
+        reason: { type: string, minLength: 3, maxLength: 300 }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required: [customerId, issueDate, amountCents]
+            properties:
+              customerId: { type: string, format: uuid }
+              customerName: { type: string, maxLength: 300, nullable: true }
+              documentNumber: { type: string, maxLength: 60, nullable: true }
+              issueDate: { type: string, format: date, description: 'Fecha de emisión histórica, sin conversión UTC' }
+              dueDate: { type: string, format: date, nullable: true, description: 'Si falta, issueDate + los días de crédito del cliente' }
+              amountCents: { type: integer, minimum: 1 }
+    ReminderSettings:
+      type: object
+      properties:
+        enabled: { type: boolean, description: 'Nace en false: lo enciende el Administrador' }
+        firstAfterDays: { type: integer, minimum: 1, maximum: 90, description: 'Días de atraso desde los que se avisa' }
+        repeatEveryDays: { type: integer, minimum: 7, maximum: 60, description: 'Cada cuántos días se repite el aviso de una misma partida' }
+        lastRunOn: { type: string, format: date, nullable: true }
+        updatedBy: { type: string, format: uuid, nullable: true }
+        updatedAt: { type: string, format: date-time, nullable: true }
+    ReminderSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [enabled, firstAfterDays, repeatEveryDays]
+      properties:
+        enabled: { type: boolean }
+        firstAfterDays: { type: integer, minimum: 1, maximum: 90 }
+        repeatEveryDays: { type: integer, minimum: 7, maximum: 60 }
+    ReminderPreview:
+      type: object
+      properties:
+        asOf: { type: string, format: date }
+        enabled: { type: boolean }
+        receivableCount: { type: integer }
+        withoutEmailCount: { type: integer, description: 'Clientes que no recibirían nada por no tener correo' }
+        customers:
+          type: array
+          items:
+            type: object
+            properties:
+              customerId: { type: string, format: uuid }
+              customerName: { type: string }
+              currencyCode: { type: string }
+              hasEmail: { type: boolean }
+              emailHint: { type: string, nullable: true, example: 'ma***@empresa.com' }
+              totalCents: { type: integer }
+              receivableCount: { type: integer }
+              extraItems: { type: integer, description: 'Partidas que no caben en el detalle del correo (máx. 20)' }
+              items:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    receivableId: { type: string, format: uuid }
+                    documentNumber: { type: string, nullable: true }
+                    dueDate: { type: string, format: date }
+                    daysOverdue: { type: integer }
+                    balanceCents: { type: integer }
+    ReminderRun:
+      type: object
+      properties:
+        runDate: { type: string, format: date }
+        customersReminded: { type: integer }
+        receivablesReminded: { type: integer }
+        customersWithoutEmail: { type: integer }
+        customersAlreadyReminded: { type: integer, description: 'Otra corrida (otra réplica) ya los avisó ese día' }
+    OpeningBalanceLoad:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        cutoffDate: { type: string, format: date }
+        totalCents: { type: integer, description: 'Total cargado, en centavos' }
+        loadedBy: { type: string, format: uuid }
+        reason: { type: string }
+        createdAt: { type: string, format: date-time }
+    ReceiptLine:
+      type: object
+      required: [receivableId, appliedCents]
+      properties:
+        receivableId: { type: string, format: uuid }
+        appliedCents: { type: integer, minimum: 1 }
+    ReceiptAdvanceUse:
+      type: object
+      required: [advanceId, usedCents]
+      properties:
+        advanceId: { type: string, format: uuid, description: 'Solo anticipos de cobros anteriores del mismo cliente' }
+        usedCents: { type: integer, minimum: 1 }
+    ReceiptCreateInput:
+      type: object
+      additionalProperties: false
+      required: [customerId, receiptDate, method, totalCents, lines]
+      properties:
+        customerId: { type: string, format: uuid }
+        receiptDate: { type: string, description: 'AAAA-MM-DD' }
+        method: { type: string, enum: [cash, transfer, check, card, other] }
+        accountRole: { type: string, enum: [cash, bank], nullable: true, description: 'Por defecto: efectivo → cash, lo demás → bank' }
+        reference: { type: string, maxLength: 100, nullable: true, description: 'Obligatoria en cheque y transferencia' }
+        totalCents: { type: integer, minimum: 0, description: 'Lo que entró a caja o banco (puede ser 0 si solo se consumen anticipos)' }
+        lines: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/ReceiptLine' } }
+        advanceUses: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/ReceiptAdvanceUse' } }
+        notes: { type: string, maxLength: 500, nullable: true }
+    ReceiptUpdateInput:
+      type: object
+      additionalProperties: false
+      required: [receiptDate, method, totalCents, lines]
+      properties:
+        receiptDate: { type: string }
+        method: { type: string, enum: [cash, transfer, check, card, other] }
+        accountRole: { type: string, enum: [cash, bank], nullable: true }
+        reference: { type: string, maxLength: 100, nullable: true }
+        totalCents: { type: integer, minimum: 0 }
+        lines: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/ReceiptLine' } }
+        advanceUses: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/ReceiptAdvanceUse' } }
+        notes: { type: string, maxLength: 500, nullable: true }
+        expectedVersion: { type: integer, minimum: 1 }
+    ReceiptVoidInput:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 5, maxLength: 300 }
+    Receipt:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: string, nullable: true, description: 'RC-AAAA-NNNNNN; null mientras es borrador' }
+        status: { type: string, enum: [draft, posted, voided] }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        customerIdentification: { type: string, nullable: true }
+        receiptDate: { type: string }
+        method: { type: string, enum: [cash, transfer, check, card, other] }
+        accountRole: { type: string, enum: [cash, bank] }
+        reference: { type: string, nullable: true }
+        currencyCode: { type: string }
+        totalCents: { type: integer }
+        advanceUsedCents: { type: integer }
+        appliedCents: { type: integer }
+        advanceCents: { type: integer }
+        lineCount: { type: integer }
+        lines: { type: array, items: { $ref: '#/components/schemas/ReceiptLine' } }
+        advanceUses: { type: array, items: { $ref: '#/components/schemas/ReceiptAdvanceUse' } }
+        notes: { type: string, nullable: true }
+        voidReason: { type: string, nullable: true }
+        createdBy: { type: string, format: uuid }
+        postedBy: { type: string, format: uuid, nullable: true }
+        voidedBy: { type: string, format: uuid, nullable: true }
+        postedAt: { type: string, format: date-time, nullable: true }
+        voidedAt: { type: string, format: date-time, nullable: true }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ReceiptPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Receipt' } }
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.local
+*.local
+*.pem
+certs/
+*.log
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/
+config/*.env
+!config/*.enc

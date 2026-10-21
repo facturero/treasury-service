@@ -1,0 +1,357 @@
+asyncapi: 2.6.0
+info:
+  title: treasury-service — eventos
+  version: 1.0.0
+  description: >-
+    treasury-service PUBLICA estos eventos en el exchange `crm.events` (patrón Outbox, @facturero/outbox-relay) y CONSUME
+    dos de facturación, los que abren y cierran partidas de cartera. Todo payload lleva `organizationId` y, añadidos por el
+    relay, actor, IP y request-id. Los importes van en centavos de la moneda base de la organización; las fechas de
+    emisión y de vencimiento son fechas de calendario `AAAA-MM-DD` sin conversión UTC. Los routing key son de tres
+    segmentos `treasury.<recurso>.<acción>` y la acción va en pasado: la bitácora se lee como una lista de hechos.
+channels:
+  treasury.receivable.opened:
+    publish:
+      summary: Partida de cartera abierta — un cliente pasa a deber
+      description: >-
+        Lo publica la factura (`01`), la nota de débito (`05`) o una carga de saldos iniciales. `dueDate` sale de
+        `issueDate + los días de crédito` que tenía el cliente EN ESE MOMENTO: cambiar el plazo después no reescribe
+        las partidas ya creadas.
+      message:
+        payload:
+          $ref: '#/components/schemas/ReceivablePayload'
+  treasury.receivable.cancelled:
+    publish:
+      summary: Partida anulada — la factura se anuló y contabilidad revirtió su asiento
+      description: >-
+        El saldo NO queda en cero: lo que se le había acreditado (una nota de crédito) no se revierte con la factura,
+        así que la partida queda en contra, que es justo lo que dice el libro mayor.
+      message:
+        payload:
+          allOf:
+            - $ref: '#/components/schemas/ReceivablePayload'
+            - type: object
+              properties:
+                reason: { type: string, nullable: true, description: 'El motivo de la anulación, si lo traía el evento' }
+  treasury.receivable.credited:
+    publish:
+      summary: Una nota de crédito redujo la deuda de una partida
+      description: >-
+        Se emite UN evento por cada importe aplicado, con SU `appliedCents`, no uno con la suma. `advanceId` viene cuando
+        lo que se aplicó fue un saldo a favor del cliente: entonces cambian la partida y el anticipo a la vez y la
+        bitácora tiene que poder reconstruir las dos caras.
+      message:
+        payload:
+          allOf:
+            - $ref: '#/components/schemas/ReceivablePayload'
+            - type: object
+              properties:
+                creditType: { type: string, enum: [credit_note, receipt] }
+                creditSourceId: { type: string, format: uuid }
+                creditDocumentNumber: { type: string, nullable: true }
+                appliedCents: { type: integer, minimum: 1 }
+                advanceId: { type: string, format: uuid, nullable: true }
+  treasury.customer_advance.opened:
+    publish:
+      summary: Saldo a favor del cliente abierto (una nota de crédito sin factura a la que aplicarla)
+      description: >-
+        Ocurre cuando la nota de crédito llega antes que su factura, o cuando la factura ya estaba cubierta. El saldo se
+        aplica a la próxima factura del cliente, o a `relatedInvoiceId` si venía indicado.
+      message:
+        payload:
+          $ref: '#/components/schemas/CustomerAdvancePayload'
+  treasury.customer_terms.updated:
+    publish:
+      summary: Condiciones de crédito del cliente cambiadas (plazo o cupo)
+      description: >-
+        Lleva valor anterior y valor nuevo de AMBOS campos: sin los dos, la bitácora no dice qué cambió.
+      message:
+        payload:
+          $ref: '#/components/schemas/CustomerTermsPayload'
+  treasury.opening_balance.loaded:
+    publish:
+      summary: Carga de saldos iniciales de cartera (qué se cargó, cuánto y por qué)
+      message:
+        payload:
+          $ref: '#/components/schemas/OpeningBalancePayload'
+
+  treasury.receivable.overdue:
+    publish:
+      summary: Recordatorio de cobro a UN cliente con sus partidas vencidas que tocan hoy
+      description: >-
+        Lo publica el proceso diario (o «enviar ahora») y SOLO si el Administrador encendió los recordatorios. Un evento
+        por cliente (no por partida: 31 facturas vencidas son un correo con la lista). Idempotente por (partida, día) y
+        un aviso por partida y semana como máximo. Lo consume `notification-service` (correo al cliente, plantilla
+        `treasury.receivable.overdue.html`) y la bitácora. El correo del cliente y el nombre de quien cobra viajan en el
+        evento: notificaciones no consulta a nadie.
+      message:
+        payload:
+          $ref: '#/components/schemas/ReceivableOverduePayload'
+  treasury.reminder_settings.updated:
+    publish:
+      summary: La organización cambió cómo se avisa a sus clientes (valor anterior y nuevo)
+      message:
+        payload:
+          $ref: '#/components/schemas/ReminderSettingsPayload'
+  treasury.report.exported:
+    publish:
+      summary: Un reporte salió del sistema como archivo CSV (cartera, antigüedad o estado de cuenta)
+      description: >-
+        Las lecturas no emiten, pero exportar sí: es la cartera de clientes con sus saldos saliendo del sistema. Lleva el
+        reporte, los filtros aplicados (sin claves vacías), el número de filas y quién lo exportó.
+      message:
+        payload:
+          $ref: '#/components/schemas/ReportExportedPayload'
+
+  billing.invoice.issued:
+    subscribe:
+      summary: Factura emitida (publica billing-service; aquí abre partida de cartera)
+      description: >-
+        Quién lo publica: `billing-service` (canal `billing.invoice.issued` en su asyncapi). Tesorería aplica los
+        MISMOS filtros que la contabilización automática de contabilidad (moneda base, forma de pago con rol
+        `receivables`, fecha de arranque, cuadre de ventas + IVA = total): si contabilidad no asienta un documento,
+        tesorería no abre partida para él. Una venta de POS (`posSaleId`) no abre nada: ya se cobró.
+        Ante DUPLICADO: el `UNIQUE (organization_id, source_type, source_id)` devuelve la partida existente y el evento
+        se descarta sin escribir nada. Ante DESORDEN: si la nota de crédito llegó antes que su factura, se guarda como
+        saldo a favor y se aplica en cuanto llega la factura.
+      message:
+        payload:
+          $ref: '#/components/schemas/InvoiceIssuedPayload'
+  billing.invoice.voided:
+    subscribe:
+      summary: Factura anulada (publica billing-service; aquí se cierra la partida)
+      description: >-
+        Quién lo publica: `billing-service`. Ante DUPLICADO: si la partida ya está `cancelled` no se toca y no se
+        publica nada. Ante DESORDEN (la anulación llega antes que la emisión): se crea una partida `cancelled` de
+        importe cero para que la emisión posterior no abra una deuda que ya no existe.
+      message:
+        payload:
+          $ref: '#/components/schemas/InvoiceVoidedPayload'
+  treasury.receipt.created:
+    publish:
+      summary: Cobro guardado en borrador
+      description: >-
+        No toca saldos ni gasta número: es lo que una persona piensa cobrar. Lleva los importes derivados (aplicado,
+        anticipos consumidos y excedente) y las líneas, hasta 20 (el total real va en `lineCount`).
+      message:
+        payload:
+          $ref: '#/components/schemas/ReceiptPayload'
+  treasury.receipt.updated:
+    publish:
+      summary: Borrador de cobro modificado
+      description: Solo un borrador se edita; uno contabilizado se anula y se rehace.
+      message:
+        payload:
+          $ref: '#/components/schemas/ReceiptPayload'
+  treasury.receipt.posted:
+    publish:
+      summary: Cobro contabilizado — dinero que entra y deudas que se cubren
+      description: >-
+        Lo consume contabilidad para asentar: Dr caja o bancos (`accountRole`) por `totalCents`, Dr anticipos de clientes
+        por `advanceUsedCents`, Cr cuentas por cobrar (con el cliente como tercero) por `appliedCents` y Cr anticipos de
+        clientes por `advanceCents`. La igualdad `totalCents + advanceUsedCents = appliedCents + advanceCents` la fija un
+        CHECK en la base. `receiptDate` es una fecha de calendario `AAAA-MM-DD` sin hora: contabilidad NO la convierte por
+        UTC. El `number` (`RC-AAAA-NNNNNN`) se asigna al contabilizar. Además se publica `treasury.receivable.credited`
+        por cada deuda cubierta (con `creditType: receipt`) y `treasury.customer_advance.opened` si hubo excedente.
+      message:
+        payload:
+          allOf:
+            - $ref: '#/components/schemas/ReceiptPayload'
+            - type: object
+              properties:
+                postedBy: { type: string, format: uuid }
+  treasury.receipt.voided:
+    publish:
+      summary: Cobro anulado, con motivo
+      description: >-
+        Contabilidad reversa el asiento del cobro. Nada se borra: las aplicaciones y los consumos de anticipo se marcan
+        anulados, y el anticipo que abrió el excedente se marca anulado. Lleva el MOTIVO y quién lo contabilizó y quién lo
+        anuló, que es lo que la bitácora tiene que poder contar.
+      message:
+        payload:
+          allOf:
+            - $ref: '#/components/schemas/ReceiptPayload'
+            - type: object
+              properties:
+                reason: { type: string, description: 'Motivo de la anulación (mínimo 5 caracteres)' }
+                postedBy: { type: string, format: uuid, nullable: true }
+                voidedBy: { type: string, format: uuid }
+                voidedAt: { type: string, format: date-time, nullable: true, description: 'Instante de la anulación: contabilidad fecha la reversa con él' }
+components:
+  schemas:
+    ReceivablePayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        receivableId: { type: string, format: uuid }
+        sourceType: { type: string, enum: [invoice, credit_note, initial_balance] }
+        sourceId: { type: string, description: 'Id del comprobante que originó la partida, o `${loadId}:${indice}` en un saldo inicial' }
+        invoiceNumber: { type: string, nullable: true, description: Número del comprobante en el SRI }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        amountCents: { type: integer, minimum: 0 }
+        currencyCode: { type: string, example: USD }
+        issueDate: { type: string, format: date, description: Fecha de calendario sin conversión UTC }
+        dueDate: { type: string, format: date }
+    CustomerAdvancePayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        advanceId: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        origin: { type: string, enum: [credit_note, receipt] }
+        originId: { type: string, format: uuid }
+        documentNumber: { type: string, nullable: true }
+        amountCents: { type: integer, minimum: 1 }
+        currencyCode: { type: string, example: USD }
+        relatedInvoiceId: { type: string, format: uuid, nullable: true, description: 'Si no es null, solo se aplica a esa factura' }
+    CustomerTermsPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        previousCreditDays: { type: integer, description: Valor ANTERIOR de días de crédito }
+        creditDays: { type: integer, description: Valor NUEVO }
+        previousCreditLimitCents: { type: integer, nullable: true, description: Valor ANTERIOR del cupo; null = sin cupo }
+        creditLimitCents: { type: integer, nullable: true, description: Valor NUEVO }
+        updatedBy: { type: string, format: uuid }
+    OpeningBalancePayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        loadId: { type: string, format: uuid }
+        cutoffDate: { type: string, format: date }
+        customerCount: { type: integer, description: Número de líneas de la carga }
+        totalCents: { type: integer, minimum: 0, description: Total cargado en centavos }
+        loadedBy: { type: string, format: uuid }
+        reason: { type: string }
+    ReceivableOverduePayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        organizationName: { type: string, description: 'Con quién se firma el correo' }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        email: { type: string, description: 'A dónde se envía (solo clientes con correo)' }
+        currencyCode: { type: string }
+        runDate: { type: string, format: date }
+        totalOverdueCents: { type: integer }
+        receivableCount: { type: integer, description: 'TODAS las partidas que cubre el aviso' }
+        extraItems: { type: integer, description: 'Las que no caben en `items` (máx. 20)' }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              receivableId: { type: string, format: uuid }
+              documentNumber: { type: string, nullable: true }
+              dueDate: { type: string, format: date }
+              daysOverdue: { type: integer }
+              balanceCents: { type: integer }
+        trigger: { type: string, enum: [scheduled, manual] }
+        triggeredBy: { type: string, format: uuid, nullable: true }
+    ReminderSettingsPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        enabled: { type: boolean }
+        firstAfterDays: { type: integer }
+        repeatEveryDays: { type: integer }
+        previousEnabled: { type: boolean }
+        previousFirstAfterDays: { type: integer }
+        previousRepeatEveryDays: { type: integer }
+        updatedBy: { type: string, format: uuid, nullable: true }
+    ReportExportedPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        report: { type: string, enum: [receivables, aging, statement] }
+        format: { type: string, enum: [csv] }
+        filters: { type: object, description: 'Solo los filtros aplicados' }
+        rowCount: { type: integer }
+        exportedBy: { type: string, format: uuid }
+        customerId: { type: string, format: uuid, description: 'Solo en `statement`' }
+    InvoiceIssuedPayload:
+      type: object
+      description: Campos que treasury-service lee de `billing.invoice.issued`; el resto se acepta y se ignora.
+      properties:
+        organizationId: { type: string, format: uuid }
+        invoiceId: { type: string, format: uuid }
+        customerId: { type: string, format: uuid, nullable: true }
+        number: { type: string, nullable: true }
+        issueDate: { type: string, description: 'Instante ISO si el emisor lo manda así; la fecha de calendario se deriva con el huso de contabilidad' }
+        documentTypeCode: { type: string, description: 'Tipo SRI: 01 factura, 04 nota de crédito, 05 nota de débito', example: '01' }
+        relatedInvoiceId: { type: string, format: uuid, nullable: true }
+        posSaleId: { type: string, format: uuid, nullable: true, description: 'Si no es null, la venta ya está cobrada y no abre partida' }
+        customerSnapshot:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            businessName: { type: string }
+            identification: { type: string, nullable: true }
+        subtotalCents: { type: integer }
+        taxTotalCents: { type: integer }
+        totalCents: { type: integer, minimum: 1 }
+        currencyCode: { type: string, example: USD }
+        paymentMethodCode: { type: string, nullable: true }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              subtotalCents: { type: integer }
+              taxes:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    kind: { type: string }
+                    amountCents: { type: integer }
+    InvoiceVoidedPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        invoiceId: { type: string, format: uuid }
+        number: { type: string, nullable: true }
+        issueDate: { type: string, nullable: true }
+        reason: { type: string, nullable: true }
+        voidedAt: { type: string, nullable: true }
+    ReceiptPayload:
+      type: object
+      required: [organizationId, receiptId, status, customerId, receiptDate, method, accountRole, totalCents, appliedCents]
+      properties:
+        organizationId: { type: string, format: uuid }
+        receiptId: { type: string, format: uuid }
+        number: { type: string, nullable: true, description: 'RC-AAAA-NNNNNN; null mientras es borrador' }
+        status: { type: string, enum: [draft, posted, voided] }
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        receiptDate: { type: string, description: 'Fecha de calendario AAAA-MM-DD, sin hora' }
+        method: { type: string, enum: [cash, transfer, check, card, other] }
+        accountRole: { type: string, enum: [cash, bank], description: 'Rol contable que recibe el dinero' }
+        reference: { type: string, nullable: true }
+        currencyCode: { type: string }
+        totalCents: { type: integer, description: 'Lo que entró a caja o banco' }
+        advanceUsedCents: { type: integer, description: 'De anticipos anteriores del cliente que este cobro consume' }
+        appliedCents: { type: integer, description: 'Lo aplicado a deudas' }
+        advanceCents: { type: integer, description: 'Excedente: queda como anticipo nuevo del cliente' }
+        lineCount: { type: integer }
+        lines:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            properties:
+              receivableId: { type: string, format: uuid }
+              invoiceNumber: { type: string, nullable: true }
+              appliedCents: { type: integer }
+        advanceUses:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            properties:
+              advanceId: { type: string, format: uuid }
+              usedCents: { type: integer }

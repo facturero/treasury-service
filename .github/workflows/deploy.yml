@@ -1,0 +1,129 @@
+name: Deploy treasury-service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set lowercase image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}/treasury-service" >> $GITHUB_ENV
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          registry-url: https://npm.pkg.github.com
+          scope: '@facturero'
+          always-auth: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Check openapi.yaml vs routes
+        run: node scripts/check-openapi-routes.mjs
+
+      - name: Check asyncapi.yaml vs events
+        run: node scripts/check-asyncapi-events.mjs
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            NODE_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set lowercase image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}/treasury-service" >> $GITHUB_ENV
+
+      - name: Install sops & age (AMD64)
+        run: |
+          if ! command -v sops &> /dev/null; then
+            SOPS_VERSION=$(curl -sI https://github.com/getsops/sops/releases/latest | grep -i location | grep -oP 'v\K[0-9.]+')
+            wget -O /tmp/sops "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+            sudo mv /tmp/sops /usr/local/bin/sops
+            sudo chmod +x /usr/local/bin/sops
+          fi
+          if ! command -v age &> /dev/null; then
+            AGE_VERSION=$(curl -sI https://github.com/FiloSottile/age/releases/latest | grep -i location | grep -oP 'v\K[0-9.]+')
+            wget -O /tmp/age.tar.gz "https://github.com/FiloSottile/age/releases/latest/download/age-v${AGE_VERSION}-linux-amd64.tar.gz"
+            sudo tar -xzf /tmp/age.tar.gz -C /usr/local/bin --strip-components=1 age/age age/age-keygen
+            rm -f /tmp/age.tar.gz
+          fi
+
+      - name: Set age decryption key
+        run: |
+          echo "SOPS_AGE_KEY<<EOF" >> $GITHUB_ENV
+          echo "${{ secrets.SOPS_AGE_KEY }}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Decrypt secrets and apply to K3s
+        run: |
+          sops -d --input-type dotenv --output-type dotenv config/secrets.production.enc > /tmp/.env
+          source /tmp/.env
+          rm -f /tmp/.env
+          kubectl create secret generic treasury-db \
+            --from-literal=host="$DB_HOST" \
+            --from-literal=port="$DB_PORT" \
+            --from-literal=user="$DB_USER" \
+            --from-literal=password="$DB_PASSWORD" \
+            --from-literal=name="$DB_NAME" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic treasury-rabbitmq \
+            --from-literal=url="$RABBITMQ_URL" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Update image and deploy
+        run: |
+          export REGISTRY=${REGISTRY}
+          export IMAGE_NAME=${IMAGE_NAME}
+          export IMAGE_TAG=${{ github.sha }}
+          envsubst < k8s/deployment.yaml | kubectl apply -f -
+          kubectl apply -f k8s/service.yaml
+          kubectl rollout status deployment treasury-service-node --timeout=180s

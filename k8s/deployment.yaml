@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: treasury-service-node
+  labels:
+    app: treasury-service-node
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: treasury-service-node
+  template:
+    metadata:
+      labels:
+        app: treasury-service-node
+    spec:
+      initContainers:
+        - name: treasury-migrate
+          image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - "npx sequelize-cli db:migrate"
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: host
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: port
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: password
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: name
+      containers:
+        - name: treasury-service
+          image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+          ports:
+            - containerPort: 3018
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3018"
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: host
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: port
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: password
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-db
+                  key: name
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: treasury-rabbitmq
+                  key: url
+            - name: CORS_ORIGIN
+              value: "https://crm.noahsolution.com"
+            - name: INTERNAL_USER_ID
+              value: "00000000-0000-0000-0000-000000000000"
+            # Contabilidad (server-to-server): moneda base, huso y cuentas de caja/banco.
+            - name: ACCOUNTING_SERVICE_URL
+              value: "http://accounting-service-node:3016"
+            # Clientes (server-to-server): los saldos iniciales solo se aceptan a nombre de un cliente que exista.
+            - name: CUSTOMER_SERVICE_URL
+              value: "http://customer-service-node:3004"
+            # Organización (server-to-server): el nombre con el que se firma el recordatorio de cobro que le llega al cliente.
+            - name: ORGANIZATION_SERVICE_URL
+              value: "http://organization-service:3002"
+            - name: OTEL_SERVICE_NAME
+              value: "treasury-service"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4318"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            # Sin `limits` a propósito: un tope de CPU estrangulaba al servicio y las pruebas medían el límite de
+            # Kubernetes, no la capacidad del código. Se conservan los `requests` (reserva).
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3018
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3018
+            initialDelaySeconds: 5
+            periodSeconds: 10

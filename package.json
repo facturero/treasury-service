@@ -1,0 +1,54 @@
+{
+  "name": "treasury-service",
+  "version": "1.0.0",
+  "description": "Tesorería: submayor de cuentas por cobrar, condiciones de crédito, saldos iniciales y cobros.",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:openapi": "node scripts/check-openapi-routes.mjs",
+    "verify:asyncapi": "node scripts/check-asyncapi-events.mjs",
+    "verify:live": "node scripts/verify-treasury.mjs",
+    "verify:reminders": "node scripts/verify-reminders.mjs",
+    "db:migrate": "sequelize-cli db:migrate",
+    "db:migrate:undo": "sequelize-cli db:migrate:undo"
+  },
+  "dependencies": {
+    "@facturero/outbox-relay": "^0.2.3",
+    "@hono/node-server": "^1.19.14",
+    "@hono/otel": "^1.1.2",
+    "@hono/zod-validator": "^0.4.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/instrumentation-http": "^0.221.0",
+    "@opentelemetry/instrumentation-mysql2": "^0.67.0",
+    "@opentelemetry/instrumentation-sequelize": "^0.14.0",
+    "@opentelemetry/instrumentation-undici": "^0.31.0",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-metrics": "^2.10.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
+    "dotenv": "^16.4.7",
+    "hono": "^4.6.14",
+    "mysql2": "^3.11.5",
+    "sequelize": "^6.37.5",
+    "sequelize-cli": "^6.6.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module"
+}
