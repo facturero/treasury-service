@@ -171,6 +171,111 @@ channels:
         payload:
           $ref: '#/components/schemas/PaymentSettingsPayload'
 
+  treasury.bank_account.created:
+    publish:
+      summary: Cuenta bancaria creada
+      description: >-
+        Lleva los últimos 4 dígitos, NUNCA el número completo, ni el perfil de importación (solo si lo tiene).
+      message:
+        payload:
+          $ref: '#/components/schemas/BankAccountPayload'
+  treasury.bank_account.updated:
+    publish:
+      summary: Cuenta bancaria editada
+      description: >-
+        `changes` dice qué campos cambiaron, con el valor anterior y el nuevo (un saldo de apertura que se movió, una cuenta desactivada).
+      message:
+        payload:
+          $ref: '#/components/schemas/BankAccountUpdatedPayload'
+  treasury.bank_statement.imported:
+    publish:
+      summary: Extracto bancario importado
+      description: >-
+        Cuántos renglones entraron, cuántos se omitieron por repetidos o por ser anteriores a la apertura, y el periodo y saldo de cierre.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankStatementImportedPayload'
+  treasury.bank_movement.assigned:
+    publish:
+      summary: Cuenta bancaria asignada a un movimiento
+      description: >-
+        Cobro o pago anterior a este módulo, o elegido sin cuenta, que pasa a una cuenta; o una cuenta equivocada que se corrige.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankMovementAssignedPayload'
+  treasury.bank_movement.reversed:
+    publish:
+      summary: Movimiento revertido deshaciendo un emparejamiento
+      description: >-
+        Solo se publica cuando el cobro, pago o ajuste anulado estaba emparejado con un renglón del extracto (el emparejamiento COMPLETO del renglón se deshizo). Lo demás ya lo dice la anulación del documento.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankMovementReversedPayload'
+  treasury.bank_adjustment.posted:
+    publish:
+      summary: Ajuste bancario registrado — contabilidad lo asienta
+      description: >-
+        Comisión, interés u otro ingreso o egreso del banco. Contabilidad asienta Dr other_expense / Cr bank (`direction: out`) o Dr bank / Cr other_income (`direction: in`) con `amountCents` positivo y `adjustmentDate` como fecha del asiento. Idempotente por `adjustmentId`.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankAdjustmentPayload'
+  treasury.bank_adjustment.voided:
+    publish:
+      summary: Ajuste bancario anulado — contabilidad reversa el asiento
+      description: >-
+        Lleva el motivo y quién lo anuló. Si llega antes que el posted, contabilidad lo espera.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankAdjustmentVoidedPayload'
+  treasury.bank_line.matched:
+    publish:
+      summary: Renglón del extracto emparejado con movimientos
+      description: >-
+        `method` dice si lo confirmó una persona a mano o aceptó una sugerencia. La suma de `movements` es exactamente `amountCents`.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankLineMatchedPayload'
+  treasury.bank_line.unmatched:
+    publish:
+      summary: Emparejamiento deshecho
+      description: >-
+        Los movimientos del renglón quedan libres.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankLineUnmatchedPayload'
+  treasury.bank_line.marked_external:
+    publish:
+      summary: Renglón marcado «ya contabilizado fuera de tesorería»
+      description: >-
+        Es una afirmación de la persona, no una verificación: lleva el motivo.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankLineExternalPayload'
+  treasury.bank_line.unmarked_external:
+    publish:
+      summary: Marca de «contabilizado fuera de tesorería» quitada
+      description: >-
+        El renglón vuelve a «sin emparejar».
+      message:
+        payload:
+          $ref: '#/components/schemas/BankLineUnmarkedPayload'
+  treasury.bank_reconciliation.closed:
+    publish:
+      summary: Conciliación bancaria cerrada
+      description: >-
+        Con diferencia 0. Congela los renglones y emparejamientos hasta la fecha de corte.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankReconciliationPayload'
+  treasury.bank_reconciliation.reopened:
+    publish:
+      summary: Conciliación bancaria reabierta
+      description: >-
+        Solo la última de la cuenta; lleva el motivo.
+      message:
+        payload:
+          $ref: '#/components/schemas/BankReconciliationReopenedPayload'
+
   billing.invoice.issued:
     subscribe:
       summary: Factura emitida (publica billing-service; aquí abre partida de cartera)
@@ -278,6 +383,149 @@ channels:
 
 components:
   schemas:
+    BankAccountPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        name: { type: string }
+        bankName: { type: string }
+        accountType: { type: string, enum: [checking, savings] }
+        accountLast4: { type: string, nullable: true }
+        currencyCode: { type: string }
+        openingBalanceCents: { type: integer, description: 'Con signo (un sobregiro es negativo)' }
+        openingDate: { type: string, format: date }
+        isActive: { type: boolean }
+        hasImportProfile: { type: boolean }
+        createdBy: { type: string, format: uuid }
+    BankAccountUpdatedPayload:
+      allOf:
+        - $ref: '#/components/schemas/BankAccountPayload'
+        - type: object
+          properties:
+            changes: { type: object, additionalProperties: { type: object, properties: { from: {}, to: {} } } }
+            updatedBy: { type: string, format: uuid }
+    BankStatementImportedPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        statementId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        bankAccountName: { type: string }
+        fileName: { type: string, nullable: true }
+        periodStart: { type: string, format: date }
+        periodEnd: { type: string, format: date }
+        lineCount: { type: integer }
+        skippedDuplicates: { type: integer }
+        skippedBeforeOpening: { type: integer }
+        closingBalanceCents: { type: integer, nullable: true }
+        importedBy: { type: string, format: uuid }
+    BankMovementAssignedPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        movementId: { type: string, format: uuid }
+        sourceType: { type: string, enum: [receipt, payment, adjustment] }
+        sourceId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        previousBankAccountId: { type: string, format: uuid, nullable: true }
+        amountCents: { type: integer, description: 'Con signo: + entra, − sale' }
+        movementDate: { type: string, format: date }
+        assignedBy: { type: string, format: uuid }
+    BankMovementReversedPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        movementId: { type: string, format: uuid }
+        sourceType: { type: string, enum: [receipt, payment, adjustment] }
+        sourceId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid, nullable: true }
+        amountCents: { type: integer }
+        movementDate: { type: string, format: date }
+        unmatched: { type: boolean }
+    BankAdjustmentPayload:
+      type: object
+      description: Lo que contabilidad necesita para asentar. `amountCents` es siempre positivo; el sentido lo da `direction`.
+      properties:
+        organizationId: { type: string, format: uuid }
+        adjustmentId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        bankAccountName: { type: string }
+        kind: { type: string, enum: [bank_fee, interest, other_in, other_out] }
+        direction: { type: string, enum: [in, out] }
+        amountCents: { type: integer, minimum: 1 }
+        currencyCode: { type: string }
+        adjustmentDate: { type: string, format: date, description: 'Fecha de calendario (sin hora) del asiento' }
+        description: { type: string }
+        reference: { type: string, nullable: true }
+        createdBy: { type: string, format: uuid }
+    BankAdjustmentVoidedPayload:
+      allOf:
+        - $ref: '#/components/schemas/BankAdjustmentPayload'
+        - type: object
+          properties:
+            reason: { type: string }
+            voidedBy: { type: string, format: uuid }
+    BankLineMatchedPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        lineId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        lineDate: { type: string, format: date }
+        amountCents: { type: integer }
+        method: { type: string, enum: [manual, suggested] }
+        movements: { type: array, items: { type: object, properties: { id: { type: string, format: uuid }, sourceType: { type: string }, sourceId: { type: string, format: uuid }, amountCents: { type: integer } } } }
+        matchedBy: { type: string, format: uuid }
+    BankLineUnmatchedPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        lineId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        lineDate: { type: string, format: date }
+        amountCents: { type: integer }
+        movementIds: { type: array, items: { type: string, format: uuid } }
+        unmatchedBy: { type: string, format: uuid }
+    BankLineExternalPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        lineId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        lineDate: { type: string, format: date }
+        amountCents: { type: integer }
+        reason: { type: string }
+        markedBy: { type: string, format: uuid }
+    BankLineUnmarkedPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        lineId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        lineDate: { type: string, format: date }
+        amountCents: { type: integer }
+        unmarkedBy: { type: string, format: uuid }
+    BankReconciliationPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        reconciliationId: { type: string, format: uuid }
+        bankAccountId: { type: string, format: uuid }
+        bankAccountName: { type: string }
+        cutoffDate: { type: string, format: date }
+        statementBalanceCents: { type: integer }
+        registerBalanceCents: { type: integer }
+        pendingCents: { type: integer }
+        differenceCents: { type: integer }
+        closedBy: { type: string, format: uuid }
+    BankReconciliationReopenedPayload:
+      allOf:
+        - $ref: '#/components/schemas/BankReconciliationPayload'
+        - type: object
+          properties:
+            reason: { type: string }
+            reopenedBy: { type: string, format: uuid }
     ReceivablePayload:
       type: object
       properties:

@@ -19,6 +19,7 @@ tags:
   - name: Condiciones de crédito
   - name: Saldos iniciales
   - name: Cobros
+  - name: Bancos
 security:
   - gatewayHeaders: []
 paths:
@@ -693,6 +694,402 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { description: 'INVALID_PAYMENT_STATE / PAYMENT_ADVANCE_IN_USE' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/bank-accounts:
+    get:
+      tags: [Bancos]
+      summary: 'Lista las cuentas bancarias con su saldo según el registro'
+      description: >-
+        Permiso: `bank_account:read`. Cada cuenta trae `registerBalanceCents` (apertura + movimientos activos + renglones marcados externos posteriores a la apertura), los renglones y movimientos sin emparejar y la fecha de la última conciliación cerrada. `unassignedMovements` cuenta los cobros y pagos por banco que todavía no tienen cuenta.
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: activeOnly, in: query, schema: { type: boolean } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Bancos]
+      summary: 'Crea una cuenta bancaria'
+      description: >-
+        Permiso: `bank_account:manage`. Solo se guardan los ÚLTIMOS 4 dígitos (`accountLast4`): el número completo nunca se acepta. La moneda es la base de la contabilidad. `openingBalanceCents` (puede ser negativo: sobregiro) rige a `openingDate`: solo cuenta lo POSTERIOR. `importProfile` dice cómo leer el CSV del banco (se puede dejar para después). Emite `treasury.bank_account.created`.
+      x-permission: bank_account:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '201': { description: Creado }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/bank-accounts/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Bancos]
+      summary: 'Una cuenta bancaria con sus extractos importados'
+      description: >-
+        Permiso: `bank_account:read`.
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+    put:
+      tags: [Bancos]
+      summary: 'Edita una cuenta bancaria (nombre, banco, perfil de importación, activa)'
+      description: >-
+        Permiso: `bank_account:manage`. La apertura (saldo y fecha) solo cambia mientras la cuenta no tenga extractos ni conciliaciones. Desactivarla no borra nada: deja de ofrecerse en cobros y pagos. Emite `treasury.bank_account.updated` con lo que cambió (valor anterior y nuevo).
+      x-permission: bank_account:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+  /treasury/bank-accounts/{id}/statements/preview:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Vista previa de un extracto CSV: qué entraría y qué falla, sin guardar nada'
+      description: >-
+        Permiso: `bank_account:manage`. El CSV viaja como texto en `csv` (máximo 2 MB, 5000 filas); `profile` opcional reemplaza al guardado en la cuenta. Devuelve los errores por FILA y campo, los renglones nuevos, los repetidos de un extracto anterior, lo anterior a la apertura, el periodo y el saldo de cierre si el archivo lo trae. `canImport` resume si se puede importar.
+      x-permission: bank_account:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+  /treasury/bank-accounts/{id}/statements:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Importa un extracto CSV (todo o nada)'
+      description: >-
+        Permiso: `bank_account:manage`. Una sola fila con error rechaza el archivo entero (422, con `rows[N].campo`). El mismo archivo no entra dos veces (409 BANK_STATEMENT_ALREADY_IMPORTED, aunque cambie el fin de línea); los renglones ya importados de un extracto que se solapa se omiten y se cuentan. No admite renglones nuevos de un periodo ya conciliado. `saveProfile` guarda el perfil enviado en la cuenta. Emite `treasury.bank_statement.imported`.
+      x-permission: bank_account:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '201': { description: Creado }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+        '409': { description: BANK_STATEMENT_ALREADY_IMPORTED }
+  /treasury/bank-accounts/{id}/lines:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Bancos]
+      summary: 'Renglones del extracto de una cuenta, con los movimientos con que se emparejaron'
+      description: >-
+        Permiso: `bank_account:read`. `status` admite varios separados por coma: `unmatched,matched,external`.
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+  /treasury/bank-accounts/{id}/suggestions:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Bancos]
+      summary: 'Sugerencias de emparejamiento (no escribe nada)'
+      description: >-
+        Permiso: `bank_account:read`. Pares renglón↔movimiento con el MISMO importe y signo, por referencia coincidente (hasta 45 días de distancia) o por fecha cercana (5 días). Solo se sugiere lo inequívoco: el movimiento es el mejor candidato del renglón Y el renglón el del movimiento, sin empate. Una persona las confirma con `POST /treasury/bank-lines/match`.
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+  /treasury/bank-movements:
+    get:
+      tags: [Bancos]
+      summary: 'Movimientos del registro de bancos'
+      description: >-
+        Permiso: `bank_account:read`. `bankAccountId=none` lista los movimientos SIN cuenta asignada. `matched` filtra los emparejados o los pendientes.
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: bankAccountId, in: query, schema: { type: string }, description: 'uuid o `none`' }
+        - { name: status, in: query, schema: { type: string }, description: 'active,reversed' }
+        - { name: matched, in: query, schema: { type: boolean } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/bank-movements/{id}/account:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Asigna una cuenta bancaria a un movimiento que no la tenía'
+      description: >-
+        Permiso: `bank_account:manage`. Para los cobros y pagos anteriores a este módulo o elegidos sin cuenta. También corrige una cuenta equivocada mientras el movimiento no esté emparejado. Emite `treasury.bank_movement.assigned`.
+      x-permission: bank_account:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_MOVEMENT_NOT_FOUND }
+        '409': { description: BANK_MATCH_INVALID }
+  /treasury/bank-lines/match:
+    post:
+      tags: [Bancos]
+      summary: 'Confirma varios emparejamientos (las sugerencias aceptadas)'
+      description: >-
+        Permiso: `reconciliation:manage`. Cada par va en su propia transacción: uno que falla (otra persona ya emparejó ese movimiento) no tumba a los demás; la respuesta lleva `matched` y `failed` con el código. Emite `treasury.bank_line.matched` por renglón.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/bank-lines/{id}/match:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Empareja un renglón con uno o varios movimientos'
+      description: >-
+        Permiso: `reconciliation:manage`. La SUMA de los movimientos debe ser exactamente el importe del renglón, todos del mismo signo y de la misma cuenta (un depósito de varios cobros). Con la cuenta, el renglón y los movimientos bloqueados en ese orden. 409 BANK_MATCH_INVALID si no cuadra o ya está tomado.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_LINE_NOT_FOUND }
+        '409': { description: BANK_MATCH_INVALID }
+  /treasury/bank-lines/{id}/unmatch:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Deshace el emparejamiento de un renglón'
+      description: >-
+        Permiso: `reconciliation:manage`. Todos sus movimientos quedan libres. Dentro de una conciliación cerrada: 409 BANK_RECONCILED. Emite `treasury.bank_line.unmatched`.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: BANK_LINE_NOT_FOUND }
+        '409': { description: 'BANK_MATCH_INVALID o BANK_RECONCILED' }
+  /treasury/bank-lines/{id}/external:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Marca un renglón como «ya contabilizado fuera de tesorería»'
+      description: >-
+        Permiso: `reconciliation:manage`. Para lo que contabilidad ya tiene por otro camino (una venta cobrada con tarjeta al emitir la factura). Es una afirmación de la persona: el motivo es obligatorio (mínimo 5 caracteres) y queda en la bitácora. Emite `treasury.bank_line.marked_external`.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_LINE_NOT_FOUND }
+        '409': { description: BANK_MATCH_INVALID }
+  /treasury/bank-lines/{id}/unexternal:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Quita la marca de «contabilizado fuera de tesorería»'
+      description: >-
+        Permiso: `reconciliation:manage`. Dentro de una conciliación cerrada: 409 BANK_RECONCILED. Emite `treasury.bank_line.unmarked_external`.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: BANK_LINE_NOT_FOUND }
+        '409': { description: 'BANK_MATCH_INVALID o BANK_RECONCILED' }
+  /treasury/bank-adjustments:
+    post:
+      tags: [Bancos]
+      summary: 'Registra un ajuste bancario (comisión, interés, otro ingreso o egreso)'
+      description: >-
+        Permiso: `reconciliation:manage`. Lo que el banco hizo y la empresa no tenía. Es un movimiento de tesorería que publica `treasury.bank_adjustment.posted`: contabilidad lo asienta contra `other_expense` (egreso) u `other_income` (ingreso). Con `lineId` nace YA emparejado con ese renglón: el importe, el signo y la fecha salen del renglón y deben coincidir con el tipo. La fecha debe ser posterior a la apertura y a la última conciliación cerrada.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '201': { description: Creado }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+        '409': { description: BANK_MATCH_INVALID }
+  /treasury/bank-adjustments/{id}/void:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Anula un ajuste bancario'
+      description: >-
+        Permiso: `reconciliation:manage`. Motivo obligatorio. Contabilidad reversa el asiento. Idempotente. Si estaba emparejado dentro de una conciliación cerrada: 409 BANK_RECONCILED. Emite `treasury.bank_adjustment.voided`.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_MOVEMENT_NOT_FOUND }
+        '409': { description: BANK_RECONCILED }
+  /treasury/bank-accounts/{id}/reconciliation:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Bancos]
+      summary: 'Calcula la conciliación a una fecha de corte, en vivo (no guarda nada)'
+      description: >-
+        Permiso: `bank_account:read`. `diferencia = saldo del extracto − (saldo del registro − movimientos pendientes)`. Sin `statementBalanceCents` usa el saldo de cierre del extracto importado más reciente hasta el corte (`suggestedStatementBalance`); si no hay ninguno, `result` es null. Devuelve los pendientes (cheques sin cobrar, depósitos en tránsito) y los renglones sin resolver.
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: cutoffDate, in: query, required: true, schema: { type: string, format: date } }
+        - { name: statementBalanceCents, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+  /treasury/bank-accounts/{id}/reconciliations:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Bancos]
+      summary: 'Historial de conciliaciones de una cuenta'
+      description: >-
+        Permiso: `bank_account:read`. Incluye las reabiertas (quedan como historia).
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+    post:
+      tags: [Bancos]
+      summary: 'Cierra la conciliación a una fecha de corte'
+      description: >-
+        Permiso: `reconciliation:manage`. Solo con diferencia CERO y sin renglones sin resolver hasta el corte (409 INVALID_RECONCILIATION_STATE con el motivo). El corte debe ser posterior al de la última conciliación cerrada. Congela los renglones y los emparejamientos: ya no se deshacen, ni se anula el cobro, pago o ajuste que cubren, sin reabrir. Emite `treasury.bank_reconciliation.closed`.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '201': { description: Creado }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_ACCOUNT_NOT_FOUND }
+        '409': { description: INVALID_RECONCILIATION_STATE }
+  /treasury/bank-reconciliations/{id}/reopen:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Bancos]
+      summary: 'Reabre la última conciliación cerrada de la cuenta'
+      description: >-
+        Permiso: `reconciliation:manage`. Motivo obligatorio. Solo la ÚLTIMA cerrada de cada cuenta (409 si no). Descongela sus renglones y emparejamientos; la conciliación queda como `reopened` (historia). Emite `treasury.bank_reconciliation.reopened`.
+      x-permission: reconciliation:manage
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: BANK_RECONCILIATION_NOT_FOUND }
+        '409': { description: INVALID_RECONCILIATION_STATE }
+  /treasury/cash-flow:
+    get:
+      tags: [Bancos]
+      summary: 'Flujo de caja proyectado en semanas'
+      description: >-
+        Permiso: `bank_account:read`. Derivado y de solo lectura: saldo del registro de bancos (cuentas activas + movimientos sin cuenta) + cartera por vencimiento − deuda por vencimiento. Lo ya vencido cae en la columna `overdue`; lo que vence después del horizonte, en `later`. `firstNegativeKey` marca la primera columna con saldo proyectado negativo.
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: weeks, in: query, schema: { type: integer, minimum: 1, maximum: 26, default: 13 } }
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/cash-flow/export:
+    get:
+      tags: [Bancos]
+      summary: 'Exporta el flujo de caja a CSV'
+      description: >-
+        Permiso: `bank_account:read`. CSV con BOM, `Cache-Control: no-store` y encabezados en `lang` (es, en, fr). Cada archivo emite `treasury.report.exported` (`report: cash_flow`).
+      x-permission: bank_account:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: weeks, in: query, schema: { type: integer } }
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+        - { name: lang, in: query, schema: { type: string, enum: [es, en, fr] } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
 components:
   securitySchemes:

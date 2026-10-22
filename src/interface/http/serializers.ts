@@ -13,6 +13,9 @@ import type { Receipt } from '../../domain/receipt.js';
 import { payableBalanceOf, type Payable, type PayableApplication, type PayableOpeningLoad, type SupplierAdvance, supplierAdvanceBalanceOf } from '../../domain/payable.js';
 import type { Payment, PaymentSettings } from '../../domain/payment.js';
 import type { PayableDetail, PayablesAgingReport, SupplierStatement } from '../../application/use-cases/payable-list-use-cases.js';
+import type { BankAccountSummary, LineView, MovementView } from '../../application/use-cases/bank-account-use-cases.js';
+import type { ReconciliationPreview, SuggestionView } from '../../application/use-cases/bank-reconcile-use-cases.js';
+import type { BankAccount, BankMovement, BankReconciliation, BankStatement, BankStatementLine } from '../../domain/bank.js';
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
 
@@ -143,6 +146,7 @@ export const toReceiptJSON = (r: Receipt) => ({
   receiptDate: r.receiptDate,
   method: r.method,
   accountRole: r.accountRole,
+  bankAccountId: r.bankAccountId,
   reference: r.reference,
   currencyCode: r.currencyCode,
   totalCents: r.totalCents,
@@ -271,6 +275,7 @@ export const toPaymentJSON = (p: Payment) => ({
   paymentDate: p.paymentDate,
   method: p.method,
   accountRole: p.accountRole,
+  bankAccountId: p.bankAccountId,
   reference: p.reference,
   currencyCode: p.currencyCode,
   totalCents: p.totalCents,
@@ -307,4 +312,110 @@ export const toPayableOpeningLoadJSON = (l: PayableOpeningLoad) => ({
   reason: l.reason,
   totalCents: l.totalCents,
   createdAt: l.createdAt.toISOString(),
+});
+
+
+// ── Bancos, extractos y conciliación (bloque E) ──────────────────────────────
+
+export const toBankAccountJSON = (a: BankAccount) => ({
+  id: a.id,
+  name: a.name,
+  bankName: a.bankName,
+  accountType: a.accountType,
+  accountLast4: a.accountLast4,
+  currencyCode: a.currencyCode,
+  openingBalanceCents: a.openingBalanceCents,
+  openingDate: a.openingDate,
+  isActive: a.isActive,
+  importProfile: a.importProfile,
+  version: a.version,
+  createdAt: a.createdAt.toISOString(),
+  updatedAt: a.updatedAt.toISOString(),
+});
+
+export const toBankAccountSummaryJSON = (s: BankAccountSummary) => ({
+  ...toBankAccountJSON(s.account),
+  registerBalanceCents: s.registerBalanceCents,
+  unmatchedLines: s.unmatchedLines,
+  unmatchedMovements: s.unmatchedMovements,
+  lastReconciledOn: s.lastReconciledOn,
+  lastStatementDate: s.lastStatementDate,
+});
+
+export const toBankStatementJSON = (s: BankStatement) => ({
+  id: s.id,
+  bankAccountId: s.bankAccountId,
+  fileName: s.fileName,
+  periodStart: s.periodStart,
+  periodEnd: s.periodEnd,
+  lineCount: s.lineCount,
+  closingBalanceCents: s.closingBalanceCents,
+  closingDate: s.closingDate,
+  importedBy: s.importedBy,
+  importedAt: s.importedAt.toISOString(),
+});
+
+export const toBankMovementJSON = (m: BankMovement) => ({
+  id: m.id,
+  bankAccountId: m.bankAccountId,
+  sourceType: m.sourceType,
+  sourceId: m.sourceId,
+  movementDate: m.movementDate,
+  amountCents: m.amountCents,
+  reference: m.reference,
+  description: m.description,
+  kind: m.kind,
+  status: m.status,
+  createdBy: m.createdBy,
+  version: m.version,
+  createdAt: m.createdAt.toISOString(),
+});
+
+export const toBankMovementViewJSON = (v: MovementView) => ({ ...toBankMovementJSON(v.movement), lineId: v.lineId, reconciled: v.reconciled });
+
+export const toBankLineJSON = (l: BankStatementLine) => ({
+  id: l.id,
+  bankAccountId: l.bankAccountId,
+  statementId: l.statementId,
+  lineDate: l.lineDate,
+  description: l.description,
+  reference: l.reference,
+  amountCents: l.amountCents,
+  balanceCents: l.balanceCents,
+  status: l.status,
+  externalReason: l.externalReason,
+  reconciled: l.reconciliationId !== null,
+});
+
+export const toBankLineViewJSON = (v: LineView) => ({ ...toBankLineJSON(v.line), movements: v.movements.map(toBankMovementJSON) });
+
+export const toSuggestionJSON = (s: SuggestionView) => ({ reason: s.reason, dayDiff: s.dayDiff, line: toBankLineJSON(s.line), movement: toBankMovementJSON(s.movement) });
+
+export const toBankReconciliationJSON = (r: BankReconciliation) => ({
+  id: r.id,
+  bankAccountId: r.bankAccountId,
+  cutoffDate: r.cutoffDate,
+  statementBalanceCents: r.statementBalanceCents,
+  registerBalanceCents: r.registerBalanceCents,
+  pendingCents: r.pendingCents,
+  differenceCents: r.differenceCents,
+  status: r.status,
+  closedBy: r.closedBy,
+  closedAt: iso(r.closedAt),
+  reopenedBy: r.reopenedBy,
+  reopenedAt: iso(r.reopenedAt),
+  notes: r.notes,
+  version: r.version,
+  createdAt: r.createdAt.toISOString(),
+});
+
+export const toReconciliationPreviewJSON = (p: ReconciliationPreview) => ({
+  bankAccountId: p.account.id,
+  cutoffDate: p.cutoffDate,
+  statementBalanceCents: p.statementBalanceCents,
+  suggestedStatementBalance: p.suggestedStatementBalance,
+  result: p.result,
+  pendingMovements: p.pendingMovements.map(toBankMovementJSON),
+  unresolvedLines: p.unresolvedLines.map(toBankLineJSON),
+  latestClosed: p.latestClosed ? toBankReconciliationJSON(p.latestClosed) : null,
 });

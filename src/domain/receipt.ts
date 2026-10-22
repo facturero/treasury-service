@@ -46,6 +46,8 @@ export interface Receipt {
   receiptDate: string;
   method: ReceiptMethod;
   accountRole: ReceiptAccountRole;
+  /** Cuenta bancaria de tesorería (solo con rol `bank`). `null` = efectivo o sin elegir. */
+  bankAccountId: string | null;
   reference: string | null;
   currencyCode: string;
   /** Lo que entró de verdad a caja o banco. */
@@ -78,6 +80,8 @@ export interface ReceiptInput {
   receiptDate: string;
   method: ReceiptMethod;
   accountRole?: ReceiptAccountRole | null;
+  /** Opcional: solo se admite si el rol contable es banco. */
+  bankAccountId?: string | null;
   reference?: string | null;
   /** Lo que entró a caja o banco, en centavos. Puede ser 0 si el recibo solo consume anticipos. */
   totalCents: number;

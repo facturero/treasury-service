@@ -5,6 +5,7 @@ import type { Receipt } from '../domain/receipt.js';
 import type { Payable, PayableOpeningLoad, SupplierAdvance } from '../domain/payable.js';
 import type { Payment, PaymentSettings } from '../domain/payment.js';
 import type { CustomerReminderPlan, ReminderSettings } from '../domain/reminder.js';
+import type { BankAccount, BankMovement, BankReconciliation, BankStatement, BankStatementLine } from '../domain/bank.js';
 
 /**
  * Construye un DomainEvent con el envelope de bitácora (eventId/type/occurredAt).
@@ -184,6 +185,7 @@ export function receiptPayload(r: Receipt, invoiceNumbers: Map<string, string | 
     receiptDate: r.receiptDate,
     method: r.method,
     accountRole: r.accountRole,
+    bankAccountId: r.bankAccountId,
     reference: r.reference,
     currencyCode: r.currencyCode,
     totalCents: r.totalCents,
@@ -303,7 +305,7 @@ export function reminderSettingsUpdatedEvent(next: ReminderSettings, previous: P
  */
 export function reportExportedEvent(params: {
   organizationId: string;
-  report: 'receivables' | 'aging' | 'statement' | 'payables' | 'payables_aging' | 'supplier_statement';
+  report: 'receivables' | 'aging' | 'statement' | 'payables' | 'payables_aging' | 'supplier_statement' | 'cash_flow';
   filters: Record<string, unknown>;
   rowCount: number;
   exportedBy: string;
@@ -424,6 +426,7 @@ export function paymentPayload(p: Payment, documentNumbers: Map<string, string |
     paymentDate: p.paymentDate,
     method: p.method,
     accountRole: p.accountRole,
+    bankAccountId: p.bankAccountId,
     reference: p.reference,
     currencyCode: p.currencyCode,
     totalCents: p.totalCents,
@@ -488,5 +491,181 @@ export function paymentSettingsUpdatedEvent(next: PaymentSettings, previous: Pic
     aggregateId: next.organizationId,
     organizationId: next.organizationId,
     payload: { approvalThresholdCents: next.approvalThresholdCents, previousApprovalThresholdCents: previous.approvalThresholdCents, updatedBy: next.updatedBy },
+  });
+}
+
+// ── Bancos, extractos y conciliación (bloque E) ──────────────────────────────
+
+/** Qué de una cuenta bancaria viaja a la bitácora: nunca el perfil de importación completo (no aporta) ni más que los últimos 4 dígitos. */
+export function bankAccountPayload(a: BankAccount): Record<string, unknown> {
+  return {
+    bankAccountId: a.id,
+    name: a.name,
+    bankName: a.bankName,
+    accountType: a.accountType,
+    accountLast4: a.accountLast4,
+    currencyCode: a.currencyCode,
+    openingBalanceCents: a.openingBalanceCents,
+    openingDate: a.openingDate,
+    isActive: a.isActive,
+    hasImportProfile: a.importProfile !== null,
+  };
+}
+
+export function bankAccountCreatedEvent(a: BankAccount, userId: string): DomainEvent {
+  return domainEvent({ type: 'treasury.bank_account.created', aggregateType: 'bank_account', aggregateId: a.id, organizationId: a.organizationId, payload: { ...bankAccountPayload(a), createdBy: userId } });
+}
+
+/** `changes` dice qué campos cambiaron (con el valor anterior): sin eso la bitácora no explica un saldo de apertura que se movió. */
+export function bankAccountUpdatedEvent(a: BankAccount, changes: Record<string, { from: unknown; to: unknown }>, userId: string): DomainEvent {
+  return domainEvent({ type: 'treasury.bank_account.updated', aggregateType: 'bank_account', aggregateId: a.id, organizationId: a.organizationId, payload: { ...bankAccountPayload(a), changes, updatedBy: userId } });
+}
+
+export function bankStatementImportedEvent(s: BankStatement, params: { bankAccountName: string; skippedDuplicates: number; skippedBeforeOpening: number; importedLines: number }): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_statement.imported',
+    aggregateType: 'bank_statement',
+    aggregateId: s.id,
+    organizationId: s.organizationId,
+    payload: {
+      statementId: s.id,
+      bankAccountId: s.bankAccountId,
+      bankAccountName: params.bankAccountName,
+      fileName: s.fileName,
+      periodStart: s.periodStart,
+      periodEnd: s.periodEnd,
+      lineCount: params.importedLines,
+      skippedDuplicates: params.skippedDuplicates,
+      skippedBeforeOpening: params.skippedBeforeOpening,
+      closingBalanceCents: s.closingBalanceCents,
+      importedBy: s.importedBy,
+    },
+  });
+}
+
+/** Un movimiento sin cuenta (cobro o pago anterior a este módulo) se asignó a una cuenta bancaria. */
+export function bankMovementAssignedEvent(m: BankMovement, previousBankAccountId: string | null, userId: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_movement.assigned',
+    aggregateType: 'bank_movement',
+    aggregateId: m.id,
+    organizationId: m.organizationId,
+    payload: { movementId: m.id, sourceType: m.sourceType, sourceId: m.sourceId, bankAccountId: m.bankAccountId, previousBankAccountId, amountCents: m.amountCents, movementDate: m.movementDate, assignedBy: userId },
+  });
+}
+
+/** El movimiento se revirtió porque se anuló el cobro, pago o ajuste que lo originó; `unmatched` dice si deshizo un emparejamiento. */
+export function bankMovementReversedEvent(m: BankMovement, unmatched: boolean): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_movement.reversed',
+    aggregateType: 'bank_movement',
+    aggregateId: m.id,
+    organizationId: m.organizationId,
+    payload: { movementId: m.id, sourceType: m.sourceType, sourceId: m.sourceId, bankAccountId: m.bankAccountId, amountCents: m.amountCents, movementDate: m.movementDate, unmatched },
+  });
+}
+
+/** Lo que lee contabilidad para asentar un ajuste bancario: el signo lo da `direction`, el importe es siempre positivo. */
+export function bankAdjustmentPayload(m: BankMovement, bankAccount: { name: string; currencyCode: string }): Record<string, unknown> {
+  return {
+    adjustmentId: m.id,
+    bankAccountId: m.bankAccountId,
+    bankAccountName: bankAccount.name,
+    kind: m.kind,
+    direction: m.amountCents >= 0 ? 'in' : 'out',
+    amountCents: Math.abs(m.amountCents),
+    currencyCode: bankAccount.currencyCode,
+    adjustmentDate: m.movementDate,
+    description: m.description,
+    reference: m.reference,
+    createdBy: m.createdBy,
+  };
+}
+
+export function bankAdjustmentPostedEvent(m: BankMovement, bankAccount: { name: string; currencyCode: string }): DomainEvent {
+  return domainEvent({ type: 'treasury.bank_adjustment.posted', aggregateType: 'bank_adjustment', aggregateId: m.id, organizationId: m.organizationId, payload: bankAdjustmentPayload(m, bankAccount) });
+}
+
+export function bankAdjustmentVoidedEvent(m: BankMovement, bankAccount: { name: string; currencyCode: string }, reason: string, voidedBy: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_adjustment.voided',
+    aggregateType: 'bank_adjustment',
+    aggregateId: m.id,
+    organizationId: m.organizationId,
+    payload: { ...bankAdjustmentPayload(m, bankAccount), reason, voidedBy },
+  });
+}
+
+/** Un renglón del extracto se emparejó con uno o varios movimientos. */
+export function bankLineMatchedEvent(line: BankStatementLine, movements: { id: string; sourceType: string; sourceId: string; amountCents: number }[], method: 'manual' | 'suggested', userId: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_line.matched',
+    aggregateType: 'bank_line',
+    aggregateId: line.id,
+    organizationId: line.organizationId,
+    payload: { lineId: line.id, bankAccountId: line.bankAccountId, lineDate: line.lineDate, amountCents: line.amountCents, method, movements, matchedBy: userId },
+  });
+}
+
+export function bankLineUnmatchedEvent(line: BankStatementLine, movementIds: string[], userId: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_line.unmatched',
+    aggregateType: 'bank_line',
+    aggregateId: line.id,
+    organizationId: line.organizationId,
+    payload: { lineId: line.id, bankAccountId: line.bankAccountId, lineDate: line.lineDate, amountCents: line.amountCents, movementIds, unmatchedBy: userId },
+  });
+}
+
+/** El renglón se marcó «ya contabilizado fuera de tesorería»: es una afirmación de la persona, por eso lleva el motivo. */
+export function bankLineMarkedExternalEvent(line: BankStatementLine, userId: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_line.marked_external',
+    aggregateType: 'bank_line',
+    aggregateId: line.id,
+    organizationId: line.organizationId,
+    payload: { lineId: line.id, bankAccountId: line.bankAccountId, lineDate: line.lineDate, amountCents: line.amountCents, reason: line.externalReason, markedBy: userId },
+  });
+}
+
+export function bankLineUnmarkedExternalEvent(line: BankStatementLine, userId: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_line.unmarked_external',
+    aggregateType: 'bank_line',
+    aggregateId: line.id,
+    organizationId: line.organizationId,
+    payload: { lineId: line.id, bankAccountId: line.bankAccountId, lineDate: line.lineDate, amountCents: line.amountCents, unmarkedBy: userId },
+  });
+}
+
+function reconciliationPayload(r: BankReconciliation): Record<string, unknown> {
+  return {
+    reconciliationId: r.id,
+    bankAccountId: r.bankAccountId,
+    cutoffDate: r.cutoffDate,
+    statementBalanceCents: r.statementBalanceCents,
+    registerBalanceCents: r.registerBalanceCents,
+    pendingCents: r.pendingCents,
+    differenceCents: r.differenceCents,
+  };
+}
+
+export function bankReconciliationClosedEvent(r: BankReconciliation, bankAccountName: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_reconciliation.closed',
+    aggregateType: 'bank_reconciliation',
+    aggregateId: r.id,
+    organizationId: r.organizationId,
+    payload: { ...reconciliationPayload(r), bankAccountName, closedBy: r.closedBy },
+  });
+}
+
+export function bankReconciliationReopenedEvent(r: BankReconciliation, bankAccountName: string, reason: string, userId: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.bank_reconciliation.reopened',
+    aggregateType: 'bank_reconciliation',
+    aggregateId: r.id,
+    organizationId: r.organizationId,
+    payload: { ...reconciliationPayload(r), bankAccountName, reason, reopenedBy: userId },
   });
 }

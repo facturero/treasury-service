@@ -241,3 +241,26 @@ export function supplierStatementCsv(lang: ReportLang, s: SupplierStatementCsvIn
   rows.push([l.statement.advances, money(s.advanceCents)]);
   return { csv: toCsv(rows), rowCount: s.payables.length };
 }
+
+// ── Flujo de caja (bloque E) ─────────────────────────────────────────────────
+
+const CASH_FLOW_LABELS: Record<ReportLang, { title: string; asOf: string; opening: string; period: string; from: string; to: string; inflow: string; outflow: string; net: string; closing: string; overdue: string; later: string; week: string }> = {
+  es: { title: 'Flujo de caja proyectado', asOf: 'Corte', opening: 'Saldo inicial en bancos', period: 'Periodo', from: 'Desde', to: 'Hasta', inflow: 'Por cobrar', outflow: 'Por pagar', net: 'Neto', closing: 'Saldo proyectado', overdue: 'Vencido', later: 'Después', week: 'Semana' },
+  en: { title: 'Projected cash flow', asOf: 'As of', opening: 'Opening bank balance', period: 'Period', from: 'From', to: 'To', inflow: 'To collect', outflow: 'To pay', net: 'Net', closing: 'Projected balance', overdue: 'Overdue', later: 'Later', week: 'Week' },
+  fr: { title: 'Flux de trésorerie prévisionnel', asOf: 'Arrêté au', opening: 'Solde bancaire initial', period: 'Période', from: 'Du', to: 'Au', inflow: 'À encaisser', outflow: 'À payer', net: 'Net', closing: 'Solde prévisionnel', overdue: 'En retard', later: 'Plus tard', week: 'Semaine' },
+};
+
+export interface CashFlowCsvInput {
+  asOf: string;
+  openingCents: number;
+  buckets: readonly { key: string; from: string | null; to: string | null; inflowCents: number; outflowCents: number; netCents: number; closingCents: number }[];
+}
+
+/** El flujo de caja en semanas: una fila por columna (vencido, semanas, después) con el saldo proyectado acumulado. */
+export function cashFlowCsv(lang: ReportLang, flow: CashFlowCsvInput): { csv: string; rowCount: number } {
+  const l = CASH_FLOW_LABELS[lang];
+  const label = (key: string): string => (key === 'overdue' ? l.overdue : key === 'later' ? l.later : `${l.week} ${key.slice(1)}`);
+  const rows: Cell[][] = [[l.title], [l.asOf, flow.asOf], [l.opening, money(flow.openingCents)], [], [l.period, l.from, l.to, l.inflow, l.outflow, l.net, l.closing]];
+  for (const b of flow.buckets) rows.push([label(b.key), b.from, b.to, money(b.inflowCents), money(b.outflowCents), money(b.netCents), money(b.closingCents)]);
+  return { csv: toCsv(rows), rowCount: flow.buckets.length };
+}

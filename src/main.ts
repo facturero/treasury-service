@@ -35,6 +35,32 @@ import {
 } from './application/use-cases/payment-use-cases.js';
 import { ExportReportsUseCase } from './application/use-cases/export-use-cases.js';
 import {
+  AssignMovementAccountUseCase,
+  CreateBankAccountUseCase,
+  GetBankAccountUseCase,
+  ImportStatementUseCase,
+  ListBankAccountsUseCase,
+  ListBankLinesUseCase,
+  ListBankMovementsUseCase,
+  PreviewStatementUseCase,
+  UpdateBankAccountUseCase,
+} from './application/use-cases/bank-account-use-cases.js';
+import {
+  CloseReconciliationUseCase,
+  GetCashFlowUseCase,
+  ListReconciliationsUseCase,
+  MarkLineExternalUseCase,
+  MatchLineUseCase,
+  MatchManyUseCase,
+  PostBankAdjustmentUseCase,
+  PreviewReconciliationUseCase,
+  ReopenReconciliationUseCase,
+  SuggestMatchesUseCase,
+  UnmarkLineExternalUseCase,
+  UnmatchLineUseCase,
+  VoidBankAdjustmentUseCase,
+} from './application/use-cases/bank-reconcile-use-cases.js';
+import {
   GetReminderSettingsUseCase,
   PreviewRemindersUseCase,
   RunDueRemindersUseCase,
@@ -72,6 +98,9 @@ async function main(): Promise<void> {
   const paymentDeps = { gateway: uow, accounting, suppliers, clock };
   const getPayablesAging = new GetPayablesAgingUseCase(repos, clock, config.ORG_TIMEZONE);
   const getSupplierStatement = new GetSupplierStatementUseCase(repos, clock, config.ORG_TIMEZONE);
+  const bankDeps = { gateway: uow, accounting, clock };
+  const getCashFlow = new GetCashFlowUseCase(repos, clock, config.ORG_TIMEZONE);
+  const matchLine = new MatchLineUseCase(bankDeps);
 
   const app = createApp({
     useCases: {
@@ -89,7 +118,7 @@ async function main(): Promise<void> {
       updateReceipt: new UpdateReceiptUseCase(receiptDeps),
       postReceipt: new PostReceiptUseCase(receiptDeps),
       voidReceipt: new VoidReceiptUseCase(receiptDeps),
-      exportReports: new ExportReportsUseCase(uow, repos, getAging, getStatement, clock, config.ORG_TIMEZONE, getPayablesAging, getSupplierStatement),
+      exportReports: new ExportReportsUseCase(uow, repos, getAging, getStatement, clock, config.ORG_TIMEZONE, getPayablesAging, getSupplierStatement, getCashFlow),
       getReminderSettings: new GetReminderSettingsUseCase(repos),
       setReminderSettings: new SetReminderSettingsUseCase(uow, clock),
       previewReminders: new PreviewRemindersUseCase(reminderDeps),
@@ -108,6 +137,28 @@ async function main(): Promise<void> {
       voidPayment: new VoidPaymentUseCase(paymentDeps),
       getPaymentSettings: new GetPaymentSettingsUseCase(repos),
       setPaymentSettings: new SetPaymentSettingsUseCase(uow, clock),
+      listBankAccounts: new ListBankAccountsUseCase(repos),
+      getBankAccount: new GetBankAccountUseCase(repos),
+      createBankAccount: new CreateBankAccountUseCase(bankDeps),
+      updateBankAccount: new UpdateBankAccountUseCase(bankDeps),
+      previewStatement: new PreviewStatementUseCase(repos),
+      importStatement: new ImportStatementUseCase(bankDeps),
+      listBankLines: new ListBankLinesUseCase(repos),
+      listBankMovements: new ListBankMovementsUseCase(repos),
+      assignMovementAccount: new AssignMovementAccountUseCase(bankDeps),
+      suggestMatches: new SuggestMatchesUseCase(repos),
+      matchLine,
+      matchMany: new MatchManyUseCase(matchLine),
+      unmatchLine: new UnmatchLineUseCase(bankDeps),
+      markLineExternal: new MarkLineExternalUseCase(bankDeps),
+      unmarkLineExternal: new UnmarkLineExternalUseCase(bankDeps),
+      postBankAdjustment: new PostBankAdjustmentUseCase(bankDeps),
+      voidBankAdjustment: new VoidBankAdjustmentUseCase(bankDeps),
+      previewReconciliation: new PreviewReconciliationUseCase(repos),
+      closeReconciliation: new CloseReconciliationUseCase(bankDeps),
+      reopenReconciliation: new ReopenReconciliationUseCase(bankDeps),
+      listReconciliations: new ListReconciliationsUseCase(repos),
+      getCashFlow,
     },
     corsOrigin: config.CORS_ORIGIN,
   });

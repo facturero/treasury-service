@@ -3,6 +3,7 @@ import { Op, QueryTypes, Transaction, type WhereOptions } from 'sequelize';
 import { withActor } from '@facturero/outbox-relay';
 import { sequelize } from './sequelize.js';
 import { buildPayableRepositories } from './payable-repositories.js';
+import { buildBankRepositories } from './bank-repositories.js';
 import {
   CreditApplicationModel,
   CustomerAdvanceApplicationModel,
@@ -504,6 +505,7 @@ function receiptRepository(tx?: Transaction): UnitOfWork['receipts'] {
     receiptDate: String(m.receipt_date),
     method: m.method as ReceiptMethod,
     accountRole: m.account_role as ReceiptAccountRole,
+    bankAccountId: m.bank_account_id,
     reference: m.reference,
     currencyCode: m.currency_code,
     totalCents: Number(m.total_cents),
@@ -534,6 +536,7 @@ function receiptRepository(tx?: Transaction): UnitOfWork['receipts'] {
     receipt_date: r.receiptDate,
     method: r.method,
     account_role: r.accountRole,
+    bank_account_id: r.bankAccountId,
     reference: r.reference,
     currency_code: r.currencyCode,
     total_cents: r.totalCents,
@@ -771,6 +774,7 @@ export function buildRepositories(tx?: Transaction): UnitOfWork {
     reminderSettings: reminderSettingsRepository(tx),
     reminders: reminderRepository(tx),
     ...buildPayableRepositories(tx),
+    ...buildBankRepositories(tx),
     outbox: outboxRepository(tx),
   };
 }
@@ -796,6 +800,12 @@ export class SequelizeUnitOfWork implements WriteUnitOfWork {
   readonly paymentSettings;
   readonly unmatchedWithholdings;
   readonly payableOpeningLoads;
+  readonly bankAccounts;
+  readonly bankMovements;
+  readonly bankStatements;
+  readonly bankLines;
+  readonly bankMatches;
+  readonly bankReconciliations;
   readonly outbox;
 
   constructor(readonly tx: Transaction) {
@@ -818,6 +828,12 @@ export class SequelizeUnitOfWork implements WriteUnitOfWork {
     this.paymentSettings = repos.paymentSettings;
     this.unmatchedWithholdings = repos.unmatchedWithholdings;
     this.payableOpeningLoads = repos.payableOpeningLoads;
+    this.bankAccounts = repos.bankAccounts;
+    this.bankMovements = repos.bankMovements;
+    this.bankStatements = repos.bankStatements;
+    this.bankLines = repos.bankLines;
+    this.bankMatches = repos.bankMatches;
+    this.bankReconciliations = repos.bankReconciliations;
     this.outbox = repos.outbox;
   }
 

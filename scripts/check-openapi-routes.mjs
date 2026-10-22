@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Coteja `openapi.yaml` con las rutas realmente montadas en `src/interface/http/routes.ts`.
+// Coteja `openapi.yaml` con las rutas realmente montadas en `src/interface/http/routes.ts` y `bank-routes.ts`.
 //
 //     node scripts/check-openapi-routes.mjs
 //
@@ -48,9 +48,12 @@ const documented = new Set();
 // Todas las registraciones `r.<método>('/ruta', …)` llevan la ruta en la misma línea.
 const implemented = new Set();
 {
-  const text = readFileSync(join(ROOT, 'src', 'interface', 'http', 'routes.ts'), 'utf8');
-  for (const m of text.matchAll(/r\.(get|post|put|patch|delete)\(\s*'([^']+)'/g)) {
-    implemented.add(`${m[1].toUpperCase()} ${m[2]}`);
+  // `routes.ts` monta las de cartera, cobros y pagos; `bank-routes.ts` las de bancos y conciliación (bloque E).
+  for (const file of ['routes.ts', 'bank-routes.ts']) {
+    const text = readFileSync(join(ROOT, 'src', 'interface', 'http', file), 'utf8');
+    for (const m of text.matchAll(/r\.(get|post|put|patch|delete)\(\s*'([^']+)'/g)) {
+      implemented.add(`${m[1].toUpperCase()} ${m[2]}`);
+    }
   }
 }
 

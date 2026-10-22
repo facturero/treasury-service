@@ -1,4 +1,4 @@
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import type { z } from 'zod';
 import type {
   GetAgingUseCase,
@@ -8,7 +8,7 @@ import type {
   ListReceivablesUseCase,
 } from '../../application/use-cases/list-use-cases.js';
 import type { GetCustomerTermsUseCase, SetCustomerTermsUseCase } from '../../application/use-cases/customer-use-cases.js';
-import type { ExportReportsUseCase, CsvFile } from '../../application/use-cases/export-use-cases.js';
+import type { ExportReportsUseCase } from '../../application/use-cases/export-use-cases.js';
 import type {
   GetReminderSettingsUseCase,
   PreviewRemindersUseCase,
@@ -46,7 +46,9 @@ import type {
 } from '../../application/use-cases/receipt-use-cases.js';
 import type { ReceiptInput, ReceiptStatus as ReceiptStatusT } from '../../domain/receipt.js';
 import type { ReceivableStatus } from '../../domain/receivable.js';
-import { requireOrganization, requirePermission, requireUser, type ContextVariables } from './middlewares.js';
+import { requireOrganization, requirePermission, requireUser } from './middlewares.js';
+import { csvResponse, org, user, type Vars } from './http-helpers.js';
+import { registerBankRoutes, type BankUseCases } from './bank-routes.js';
 import {
   agingQuerySchema,
   createPaymentSchema,
@@ -92,9 +94,6 @@ import {
   toStatementJSON,
 } from './serializers.js';
 
-type Vars = { Variables: ContextVariables };
-type Ctx = Context<Vars>;
-
 export interface AppDependencies {
   useCases: {
     listReceivables: ListReceivablesUseCase;
@@ -130,7 +129,7 @@ export interface AppDependencies {
     voidPayment: VoidPaymentUseCase;
     getPaymentSettings: GetPaymentSettingsUseCase;
     setPaymentSettings: SetPaymentSettingsUseCase;
-  };
+  } & BankUseCases;
   corsOrigin: string;
 }
 
@@ -140,16 +139,7 @@ export function healthRoutes(): Hono {
   return r;
 }
 
-/** Un CSV descargable. BOM al inicio: sin él Excel abre el archivo en la codificación equivocada y los acentos se ven mal. */
-const csvResponse = (c: Ctx, file: CsvFile) =>
-  c.body(`﻿${file.csv}`, 200, {
-    'Content-Type': 'text/csv; charset=utf-8',
-    'Content-Disposition': `attachment; filename="${file.filename}"`,
-    // Es la cartera de clientes: que ningún intermediario la guarde.
-    'Cache-Control': 'no-store',
-  });
 
-const org = (c: Ctx) => c.get('organizationId');
 
 /**
  * Un pago con `requiresApproval`: ¿llega al umbral de aprobación de la organización? Quien crea o contabiliza pagos (el Contador) no puede
@@ -160,7 +150,6 @@ const paymentJSON = async (uc: AppDependencies['useCases'], organizationId: stri
   ...toPaymentJSON(payment),
   requiresApproval: payment.status === 'draft' && requiresApproval(await uc.getPaymentSettings.execute({ organizationId }), payment),
 });
-const user = (c: Ctx) => c.get('userId');
 
 /**
  * Rutas bajo `/treasury`. El gateway las deja pasar con el prefijo intacto y exige el plugin `finance.accounts_receivable_payable`;
@@ -174,6 +163,7 @@ export function treasuryRoutes(deps: AppDependencies): Hono<Vars> {
   const r = new Hono<Vars>();
   const { useCases: uc } = deps;
   const base = [requireOrganization()] as const;
+  registerBankRoutes(r, uc);
 
   // ── Cartera ───────────────────────────────────────────────────────────────
   r.get('/treasury/receivables', ...base, requirePermission('receivable:read'), validateQuery(receivableQuerySchema), async (c) => {

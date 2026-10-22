@@ -10,7 +10,11 @@ import { join } from 'node:path';
  * Es una revisión por heurística, no una prueba de comportamiento: no sustituye a los tests de cada caso de uso
  * (`events.test.ts` comprueba el contenido de cada evento).
  */
-const EXENTOS: Record<string, string> = {};
+const EXENTOS: Record<string, string> = {
+  // Ayudantes de cobros, pagos y ajustes: escriben el movimiento en la transacción de quien los llama, y ESE publica el evento del cobro,
+  // pago o ajuste (y el de «emparejamiento deshecho», que el ayudante le devuelve para que lo publique).
+  'bank-register': 'ayudante: el caso de uso que lo llama publica el evento en la misma transacción',
+};
 
 const ESCRITURA_APLICACION = /\b(?:uow|repos)(?:\.\w+)*\.(?:save|create|delete|remove|destroy|upsert|bulkCreate|update|add)\(/;
 const ESCRITURA_DIRECTA = /\b\w+Model\.(?:create|update|destroy|bulkCreate|upsert)\(/;

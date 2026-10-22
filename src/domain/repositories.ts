@@ -11,6 +11,17 @@ import type {
 } from './payable.js';
 import type { Payment, PaymentAdvanceUse, PaymentSettings, PaymentStatus } from './payment.js';
 import type {
+  BankAccount,
+  BankMatch,
+  BankMovement,
+  BankMovementSource,
+  BankMovementStatus,
+  BankReconciliation,
+  BankStatement,
+  BankStatementLine,
+  LineStatus,
+} from './bank.js';
+import type {
   CreditApplication,
   CustomerAdvance,
   CustomerAdvanceApplication,
@@ -253,6 +264,91 @@ export interface PayableOpeningLoadRepository {
   save(load: PayableOpeningLoad): Promise<void>;
 }
 
+
+// ── Bancos, extractos y conciliación (bloque E) ──────────────────────────────
+
+export interface BankAccountRepository {
+  findById(organizationId: string, id: string, options?: { lock?: boolean }): Promise<BankAccount | null>;
+  findByName(organizationId: string, name: string): Promise<BankAccount | null>;
+  list(organizationId: string, options?: { activeOnly?: boolean }): Promise<BankAccount[]>;
+  save(account: BankAccount, expectedVersion?: number): Promise<void>;
+}
+
+export interface BankMovementFilters {
+  /** `'none'` = los movimientos sin cuenta asignada. */
+  bankAccountId?: string | 'none';
+  status?: BankMovementStatus[];
+  from?: string;
+  to?: string;
+  /** `true` = ya emparejados con un renglón del extracto; `false` = pendientes. */
+  matched?: boolean;
+  q?: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface BankMovementRepository {
+  findById(organizationId: string, id: string, options?: { lock?: boolean }): Promise<BankMovement | null>;
+  /** Idempotencia: `UNIQUE (organization_id, source_type, source_id)`. */
+  findBySource(organizationId: string, sourceType: BankMovementSource, sourceId: string, options?: { lock?: boolean }): Promise<BankMovement | null>;
+  list(organizationId: string, filters: BankMovementFilters): Promise<Page<BankMovement>>;
+  /** Todos los movimientos ACTIVOS de una cuenta (conciliación y sugerencias): sin paginar. */
+  listActiveByAccount(organizationId: string, bankAccountId: string): Promise<BankMovement[]>;
+  /** Todos los movimientos activos de la organización (saldo total para el flujo de caja). */
+  listActive(organizationId: string): Promise<BankMovement[]>;
+  countUnassigned(organizationId: string): Promise<number>;
+  save(movement: BankMovement, expectedVersion?: number): Promise<void>;
+}
+
+export interface BankStatementRepository {
+  findByHash(organizationId: string, bankAccountId: string, contentHash: string): Promise<BankStatement | null>;
+  list(organizationId: string, bankAccountId: string): Promise<BankStatement[]>;
+  add(statement: BankStatement): Promise<void>;
+}
+
+export interface BankLineFilters {
+  status?: LineStatus[];
+  from?: string;
+  to?: string;
+  q?: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface BankLineRepository {
+  findById(organizationId: string, id: string, options?: { lock?: boolean }): Promise<BankStatementLine | null>;
+  addMany(lines: BankStatementLine[]): Promise<void>;
+  /** Las huellas que ya existen en la cuenta (extractos que se solapan). */
+  existingFingerprints(organizationId: string, bankAccountId: string, fingerprints: readonly string[]): Promise<Set<string>>;
+  list(organizationId: string, bankAccountId: string, filters: BankLineFilters): Promise<Page<BankStatementLine>>;
+  /** Todos los renglones de la cuenta (conciliación): sin paginar. */
+  listAll(organizationId: string, bankAccountId: string): Promise<BankStatementLine[]>;
+  save(line: BankStatementLine): Promise<void>;
+  /** Congela los renglones (emparejados o externos) hasta el corte con la conciliación que se cierra. */
+  freeze(organizationId: string, bankAccountId: string, upTo: string, reconciliationId: string): Promise<void>;
+  unfreeze(organizationId: string, reconciliationId: string): Promise<void>;
+}
+
+export interface BankMatchRepository {
+  add(match: BankMatch): Promise<void>;
+  findByMovement(organizationId: string, movementId: string, options?: { lock?: boolean }): Promise<BankMatch | null>;
+  listByLines(organizationId: string, lineIds: readonly string[]): Promise<BankMatch[]>;
+  listByMovements(organizationId: string, movementIds: readonly string[]): Promise<BankMatch[]>;
+  /** Todos los emparejamientos de la cuenta (conciliación). */
+  listByAccount(organizationId: string, bankAccountId: string): Promise<BankMatch[]>;
+  removeByLine(organizationId: string, lineId: string): Promise<BankMatch[]>;
+  /** Congela los emparejamientos de los renglones ya congelados por esa conciliación. */
+  freeze(organizationId: string, reconciliationId: string): Promise<void>;
+  unfreeze(organizationId: string, reconciliationId: string): Promise<void>;
+}
+
+export interface BankReconciliationRepository {
+  findById(organizationId: string, id: string, options?: { lock?: boolean }): Promise<BankReconciliation | null>;
+  findLatestClosed(organizationId: string, bankAccountId: string): Promise<BankReconciliation | null>;
+  list(organizationId: string, bankAccountId: string): Promise<BankReconciliation[]>;
+  save(reconciliation: BankReconciliation, expectedVersion?: number): Promise<void>;
+}
+
 export interface OutboxRepository {
   add(event: DomainEvent): Promise<void>;
 }
@@ -276,5 +372,11 @@ export interface UnitOfWork {
   paymentSettings: PaymentSettingsRepository;
   unmatchedWithholdings: UnmatchedWithholdingRepository;
   payableOpeningLoads: PayableOpeningLoadRepository;
+  bankAccounts: BankAccountRepository;
+  bankMovements: BankMovementRepository;
+  bankStatements: BankStatementRepository;
+  bankLines: BankLineRepository;
+  bankMatches: BankMatchRepository;
+  bankReconciliations: BankReconciliationRepository;
   outbox: OutboxRepository;
 }

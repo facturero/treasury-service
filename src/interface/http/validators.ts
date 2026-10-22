@@ -149,6 +149,7 @@ const receiptBody = {
   receiptDate: LOCAL_DATE,
   method: z.enum(RECEIPT_METHODS as unknown as [string, ...string[]]),
   accountRole: z.enum(['cash', 'bank']).nullish(),
+  bankAccountId: z.string().uuid().nullish(),
   reference: optionalText(100),
   totalCents: CENTS,
   lines: z
@@ -235,6 +236,7 @@ const paymentBody = {
   paymentDate: LOCAL_DATE,
   method: z.enum(PAYMENT_METHODS as unknown as [string, ...string[]]),
   accountRole: z.enum(['cash', 'bank']).nullish(),
+  bankAccountId: z.string().uuid().nullish(),
   reference: optionalText(100),
   totalCents: CENTS,
   lines: z
@@ -286,3 +288,134 @@ export const payableOpeningBalanceSchema = z
     lines: z.array(payableOpeningLineSchema).min(1, 'La carga necesita al menos una línea.').max(500),
   })
   .strict();
+
+
+// ── Bancos, extractos y conciliación (bloque E) ──────────────────────────────
+
+/** Importe con signo (el saldo de apertura de una cuenta o de un extracto puede ser negativo: sobregiro). */
+const SIGNED_CENTS = z.number().int('Los importes van en centavos enteros.').min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER);
+const COLUMN = z.number().int().min(1).max(50);
+
+export const importProfileSchema = z
+  .object({
+    delimiter: z.enum([',', ';', '\t']),
+    skipRows: z.number().int().min(0).max(50),
+    dateColumn: COLUMN,
+    dateFormat: z.enum(['DD/MM/YYYY', 'YYYY-MM-DD', 'MM/DD/YYYY', 'DD-MM-YYYY']),
+    descriptionColumn: COLUMN,
+    referenceColumn: COLUMN.nullable(),
+    amountMode: z.enum(['signed', 'debit_credit']),
+    amountColumn: COLUMN.nullable(),
+    debitColumn: COLUMN.nullable(),
+    creditColumn: COLUMN.nullable(),
+    invertSign: z.boolean(),
+    decimalSeparator: z.enum(['.', ',']),
+    balanceColumn: COLUMN.nullable(),
+  })
+  .strict();
+
+export const createBankAccountSchema = z
+  .object({
+    name: z.string().trim().min(1, 'La cuenta necesita un nombre.').max(80),
+    bankName: z.string().trim().min(1, 'Indica el banco.').max(120),
+    accountType: z.enum(['checking', 'savings']),
+    accountLast4: z.string().trim().max(4).nullish().transform((v) => v || null),
+    openingBalanceCents: SIGNED_CENTS,
+    openingDate: LOCAL_DATE,
+    importProfile: importProfileSchema.nullish().transform((v) => v ?? null),
+  })
+  .strict();
+
+export const updateBankAccountSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    bankName: z.string().trim().min(1).max(120).optional(),
+    accountLast4: z.string().trim().max(4).nullable().optional(),
+    openingBalanceCents: SIGNED_CENTS.optional(),
+    openingDate: LOCAL_DATE.optional(),
+    isActive: z.boolean().optional(),
+    importProfile: importProfileSchema.nullable().optional(),
+    expectedVersion: z.number().int().min(1).optional(),
+  })
+  .strict();
+
+export const bankAccountsQuerySchema = z.object({ activeOnly: booleanFlag.optional() });
+
+/** El CSV viaja dentro del JSON (el navegador lo lee con `File.text()`): tope de 2 MB de texto, más lo que ocupa el escape. */
+export const statementBodySchema = z
+  .object({
+    csv: z.string().min(1, 'El archivo está vacío.').max(2_200_000, 'El archivo pasa de 2 MB: divídelo por periodos.'),
+    fileName: z.string().trim().max(200).nullish().transform((v) => v || null),
+    profile: importProfileSchema.nullish().transform((v) => v ?? null),
+    saveProfile: z.boolean().optional(),
+  })
+  .strict();
+
+const lineStatusList = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const parts = value.split(',').map((s) => s.trim()).filter(Boolean);
+    return parts.length ? parts : undefined;
+  },
+  z.array(z.enum(['unmatched', 'matched', 'external'])).min(1).optional(),
+);
+
+export const bankLinesQuerySchema = z.object({
+  status: lineStatusList,
+  from: LOCAL_DATE.optional(),
+  to: LOCAL_DATE.optional(),
+  q: z.string().trim().max(100).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+export const bankMovementsQuerySchema = z.object({
+  bankAccountId: z.union([z.literal('none'), UUID]).optional(),
+  status: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') return value;
+      const parts = value.split(',').map((s) => s.trim()).filter(Boolean);
+      return parts.length ? parts : undefined;
+    },
+    z.array(z.enum(['active', 'reversed'])).min(1).optional(),
+  ),
+  matched: booleanFlag.optional(),
+  from: LOCAL_DATE.optional(),
+  to: LOCAL_DATE.optional(),
+  q: z.string().trim().max(100).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+export const assignAccountSchema = z.object({ bankAccountId: UUID }).strict();
+
+export const matchLineSchema = z.object({ movementIds: z.array(UUID).min(1, 'Elige al menos un movimiento.').max(50), method: z.enum(['manual', 'suggested']).default('manual') }).strict();
+export const matchManySchema = z
+  .object({
+    pairs: z.array(z.object({ lineId: UUID, movementIds: z.array(UUID).min(1).max(50) }).strict()).min(1).max(200),
+    method: z.enum(['manual', 'suggested']).default('suggested'),
+  })
+  .strict();
+export const markExternalSchema = z.object({ reason: z.string().trim().min(5, 'Indica por qué ya está contabilizado (mínimo 5 caracteres).').max(300) }).strict();
+
+export const bankAdjustmentSchema = z
+  .object({
+    bankAccountId: UUID,
+    kind: z.enum(['bank_fee', 'interest', 'other_in', 'other_out']),
+    date: LOCAL_DATE,
+    amountCents: z.number().int('Los importes van en centavos enteros.').positive('El importe debe ser mayor que cero.').max(Number.MAX_SAFE_INTEGER),
+    description: z.string().trim().min(3, 'Describe el ajuste (mínimo 3 caracteres).').max(200),
+    reference: optionalText(100),
+    lineId: UUID.nullish().transform((v) => v ?? null),
+  })
+  .strict();
+export const voidAdjustmentSchema = z.object({ reason: z.string().trim().min(5, 'Indica el motivo de la anulación (mínimo 5 caracteres).').max(300) }).strict();
+
+export const reconciliationQuerySchema = z.object({ cutoffDate: LOCAL_DATE, statementBalanceCents: z.coerce.number().int().optional() });
+export const closeReconciliationSchema = z
+  .object({ cutoffDate: LOCAL_DATE, statementBalanceCents: SIGNED_CENTS, notes: optionalText(500) })
+  .strict();
+export const reopenReconciliationSchema = z.object({ reason: z.string().trim().min(5, 'Indica por qué se reabre (mínimo 5 caracteres).').max(300) }).strict();
+
+export const cashFlowQuerySchema = z.object({ weeks: z.coerce.number().int().min(1).max(26).optional(), asOf: LOCAL_DATE.optional() });
+export const exportCashFlowQuerySchema = cashFlowQuerySchema.extend({ lang: reportLang });

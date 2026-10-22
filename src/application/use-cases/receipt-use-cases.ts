@@ -25,6 +25,7 @@ import {
 } from '../events.js';
 import type { AccountingCatalogPort, Clock, CustomerCatalogPort, CustomerInfo, UnitOfWorkGateway } from '../ports.js';
 import { inTransaction } from './transaction.js';
+import { assertBankAccountChoice, recordBankMovement, reverseBankMovement } from './bank-register.js';
 
 /** Mínimo de caracteres del motivo de una anulación (igual que en compras). */
 export const MIN_VOID_REASON = 5;
@@ -115,6 +116,7 @@ function buildDraft(
     receiptDate: input.receiptDate,
     method: input.method,
     accountRole: input.accountRole ?? defaultAccountRole(input.method),
+    bankAccountId: input.bankAccountId ?? null,
     reference: input.reference?.trim() || null,
     totalCents: input.totalCents,
     ...totals,
@@ -160,6 +162,7 @@ export class CreateReceiptUseCase {
         await loadAdvances(uow, input.organizationId, draft.advanceUses.map((u) => u.advanceId), false),
       );
       if (errors.length) throw new ValidationError(errors);
+      await assertBankAccountChoice(uow, input.organizationId, draft);
       await uow.receipts.save(draft);
       await uow.outbox.add(receiptCreatedEvent(draft));
       return draft;
@@ -189,6 +192,7 @@ export class UpdateReceiptUseCase {
         await loadAdvances(uow, input.organizationId, next.advanceUses.map((u) => u.advanceId), false),
       );
       if (errors.length) throw new ValidationError(errors);
+      await assertBankAccountChoice(uow, input.organizationId, next);
       await uow.receipts.save(next, current.version);
       await uow.outbox.add(receiptUpdatedEvent(next));
       return next;
@@ -278,6 +282,19 @@ export class PostReceiptUseCase {
         }
 
         await uow.receipts.save(posted, receipt.version);
+        await recordBankMovement(uow, {
+          organizationId: input.organizationId,
+          sourceType: 'receipt',
+          sourceId: posted.id,
+          accountRole: posted.accountRole,
+          bankAccountId: posted.bankAccountId,
+          date: posted.receiptDate,
+          amountCents: posted.totalCents,
+          reference: posted.reference,
+          description: posted.customerName,
+          userId: input.userId,
+          now,
+        });
         await uow.outbox.add(receiptPostedEvent(posted, invoiceNumbers, input.userId));
         return posted;
       },
@@ -335,6 +352,8 @@ export class VoidReceiptUseCase {
 
         const voided: Receipt = { ...receipt, status: 'voided', voidReason: reason, voidedBy: input.userId, voidedAt: now, version: receipt.version + 1, updatedAt: now };
         await uow.receipts.save(voided, receipt.version);
+        const unmatched = await reverseBankMovement(uow, { organizationId: input.organizationId, sourceType: 'receipt', sourceId: receipt.id, now });
+        if (unmatched) await uow.outbox.add(unmatched);
         await uow.outbox.add(receiptVoidedEvent(voided, invoiceNumbers));
         return voided;
       },

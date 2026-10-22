@@ -16,6 +16,7 @@
     "verify:asyncapi": "node scripts/check-asyncapi-events.mjs",
     "verify:live": "node scripts/verify-treasury.mjs",
     "verify:reminders": "node scripts/verify-reminders.mjs",
+    "verify:banking": "node scripts/verify-banking.mjs",
     "db:migrate": "sequelize-cli db:migrate",
     "db:migrate:undo": "sequelize-cli db:migrate:undo"
   },

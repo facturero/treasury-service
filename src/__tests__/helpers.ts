@@ -81,6 +81,33 @@ import {
   UpdateReceiptUseCase,
   VoidReceiptUseCase,
 } from '../application/use-cases/receipt-use-cases.js';
+import {
+  AssignMovementAccountUseCase,
+  CreateBankAccountUseCase,
+  GetBankAccountUseCase,
+  ImportStatementUseCase,
+  ListBankAccountsUseCase,
+  ListBankLinesUseCase,
+  ListBankMovementsUseCase,
+  PreviewStatementUseCase,
+  UpdateBankAccountUseCase,
+} from '../application/use-cases/bank-account-use-cases.js';
+import {
+  CloseReconciliationUseCase,
+  GetCashFlowUseCase,
+  ListReconciliationsUseCase,
+  MarkLineExternalUseCase,
+  MatchLineUseCase,
+  MatchManyUseCase,
+  PostBankAdjustmentUseCase,
+  PreviewReconciliationUseCase,
+  ReopenReconciliationUseCase,
+  SuggestMatchesUseCase,
+  UnmarkLineExternalUseCase,
+  UnmatchLineUseCase,
+  VoidBankAdjustmentUseCase,
+} from '../application/use-cases/bank-reconcile-use-cases.js';
+import { buildBankMemory, emptyBankData, type BankData } from './bank-memory.js';
 import { createApp } from '../interface/http/app.js';
 
 export const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -95,7 +122,7 @@ export const USER_2 = '88888888-8888-4888-8888-888888888888';
 const clone = <T>(value: T): T => structuredClone(value);
 
 /** La «base de datos»: todo lo que las pruebas pueden mirar después. */
-interface Data {
+interface Data extends BankData {
   receivables: Map<string, Receivable>;
   creditApplications: CreditApplication[];
   advances: Map<string, CustomerAdvance>;
@@ -120,6 +147,7 @@ interface Data {
 }
 
 const emptyData = (): Data => ({
+  ...emptyBankData(),
   receivables: new Map(),
   creditApplications: [],
   advances: new Map(),
@@ -547,6 +575,7 @@ function buildUnitOfWork(data: Data): UnitOfWork {
         data.reminders.push({ organizationId: entry.organizationId, receivableId: entry.receivableId, customerId: entry.customerId, reminderDate: entry.reminderDate, trigger: entry.trigger, sentBy: entry.sentBy });
       },
     },
+    ...buildBankMemory(data),
     outbox: {
       async add(event) {
         data.events.push(clone(event));
@@ -631,6 +660,8 @@ export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo>
   const reminderDeps = { gateway, reads, customers, organizations, clock, timezone: 'America/Guayaquil' };
   const runReminders = new RunRemindersUseCase(reminderDeps);
   const paymentDeps = { gateway, accounting, suppliers, clock };
+  const bankDeps = { gateway, accounting, clock };
+  const matchLine = new MatchLineUseCase(bankDeps);
   const logs: string[] = [];
   const useCases = {
     createReceipt: new CreateReceiptUseCase(receiptDeps),
@@ -672,8 +703,30 @@ export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo>
     voidPayment: new VoidPaymentUseCase(paymentDeps),
     getPaymentSettings: new GetPaymentSettingsUseCase(reads),
     setPaymentSettings: new SetPaymentSettingsUseCase(gateway, clock),
+    listBankAccounts: new ListBankAccountsUseCase(reads),
+    getBankAccount: new GetBankAccountUseCase(reads),
+    createBankAccount: new CreateBankAccountUseCase(bankDeps),
+    updateBankAccount: new UpdateBankAccountUseCase(bankDeps),
+    previewStatement: new PreviewStatementUseCase(reads),
+    importStatement: new ImportStatementUseCase(bankDeps),
+    listBankLines: new ListBankLinesUseCase(reads),
+    listBankMovements: new ListBankMovementsUseCase(reads),
+    assignMovementAccount: new AssignMovementAccountUseCase(bankDeps),
+    suggestMatches: new SuggestMatchesUseCase(reads),
+    matchLine,
+    matchMany: new MatchManyUseCase(matchLine),
+    unmatchLine: new UnmatchLineUseCase(bankDeps),
+    markLineExternal: new MarkLineExternalUseCase(bankDeps),
+    unmarkLineExternal: new UnmarkLineExternalUseCase(bankDeps),
+    postBankAdjustment: new PostBankAdjustmentUseCase(bankDeps),
+    voidBankAdjustment: new VoidBankAdjustmentUseCase(bankDeps),
+    previewReconciliation: new PreviewReconciliationUseCase(reads),
+    closeReconciliation: new CloseReconciliationUseCase(bankDeps),
+    reopenReconciliation: new ReopenReconciliationUseCase(bankDeps),
+    listReconciliations: new ListReconciliationsUseCase(reads),
+    getCashFlow: new GetCashFlowUseCase(reads, clock, 'America/Guayaquil'),
   };
-  useCases.exportReports = new ExportReportsUseCase(gateway, reads, useCases.getAging, useCases.getStatement, clock, 'America/Guayaquil', useCases.getPayablesAging, useCases.getSupplierStatement);
+  useCases.exportReports = new ExportReportsUseCase(gateway, reads, useCases.getAging, useCases.getStatement, clock, 'America/Guayaquil', useCases.getPayablesAging, useCases.getSupplierStatement, useCases.getCashFlow);
 
   const app = createApp({
     useCases: {
@@ -710,6 +763,28 @@ export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo>
       voidPayment: useCases.voidPayment,
       getPaymentSettings: useCases.getPaymentSettings,
       setPaymentSettings: useCases.setPaymentSettings,
+      listBankAccounts: useCases.listBankAccounts,
+      getBankAccount: useCases.getBankAccount,
+      createBankAccount: useCases.createBankAccount,
+      updateBankAccount: useCases.updateBankAccount,
+      previewStatement: useCases.previewStatement,
+      importStatement: useCases.importStatement,
+      listBankLines: useCases.listBankLines,
+      listBankMovements: useCases.listBankMovements,
+      assignMovementAccount: useCases.assignMovementAccount,
+      suggestMatches: useCases.suggestMatches,
+      matchLine: useCases.matchLine,
+      matchMany: useCases.matchMany,
+      unmatchLine: useCases.unmatchLine,
+      markLineExternal: useCases.markLineExternal,
+      unmarkLineExternal: useCases.unmarkLineExternal,
+      postBankAdjustment: useCases.postBankAdjustment,
+      voidBankAdjustment: useCases.voidBankAdjustment,
+      previewReconciliation: useCases.previewReconciliation,
+      closeReconciliation: useCases.closeReconciliation,
+      reopenReconciliation: useCases.reopenReconciliation,
+      listReconciliations: useCases.listReconciliations,
+      getCashFlow: useCases.getCashFlow,
     },
     corsOrigin: '*',
   });
@@ -812,4 +887,4 @@ export function headers(permissions: string[] | string, organizationId: string |
   return h;
 }
 
-export const ALL_PERMISSIONS = ['payable:read', 'payable:export', 'payment:read', 'payment:create', 'payment:approve', 'payment:void', 'receivable:read', 'customer_terms:manage', 'opening_balance:load', 'receipt:read', 'receipt:create', 'receipt:void', 'receivable:export', 'reminder:manage'];
+export const ALL_PERMISSIONS = ['payable:read', 'payable:export', 'payment:read', 'payment:create', 'payment:approve', 'payment:void', 'receivable:read', 'customer_terms:manage', 'opening_balance:load', 'receipt:read', 'receipt:create', 'receipt:void', 'receivable:export', 'reminder:manage', 'bank_account:read', 'bank_account:manage', 'reconciliation:manage'];

@@ -160,3 +160,56 @@ export class PaymentAdvanceInUseError extends AppError {
   constructor(message = 'El anticipo de este pago ya lo consumió otro pago: anula primero ese pago.') { super(message); }
 }
 
+
+// ── Bancos, extractos y conciliación ─────────────────────────────────────────
+
+export class BankAccountNotFoundError extends AppError {
+  readonly code = 'BANK_ACCOUNT_NOT_FOUND';
+  readonly httpStatus = 404;
+  constructor(message = 'Cuenta bancaria no encontrada.') { super(message); }
+}
+
+export class BankMovementNotFoundError extends AppError {
+  readonly code = 'BANK_MOVEMENT_NOT_FOUND';
+  readonly httpStatus = 404;
+  constructor(message = 'Movimiento bancario no encontrado.') { super(message); }
+}
+
+export class BankStatementLineNotFoundError extends AppError {
+  readonly code = 'BANK_LINE_NOT_FOUND';
+  readonly httpStatus = 404;
+  constructor(message = 'Renglón del extracto no encontrado.') { super(message); }
+}
+
+export class BankReconciliationNotFoundError extends AppError {
+  readonly code = 'BANK_RECONCILIATION_NOT_FOUND';
+  readonly httpStatus = 404;
+  constructor(message = 'Conciliación no encontrada.') { super(message); }
+}
+
+/** El mismo archivo ya se importó en esta cuenta (el hash de su contenido es único por cuenta). */
+export class BankStatementAlreadyImportedError extends AppError {
+  readonly code = 'BANK_STATEMENT_ALREADY_IMPORTED';
+  readonly httpStatus = 409;
+  constructor(message = 'Este extracto ya se importó en esta cuenta.') { super(message); }
+}
+
+/** Un emparejamiento que no cuadra o que el estado de las partes no permite (otra persona ya lo emparejó, importes distintos…). */
+export class BankMatchError extends AppError {
+  readonly code = 'BANK_MATCH_INVALID';
+  readonly httpStatus = 409;
+  constructor(message: string, details?: ErrorDetail[]) { super(message, details); }
+}
+
+/** Lo que se quiere cambiar ya está dentro de una conciliación cerrada: hay que reabrirla primero. */
+export class BankReconciledError extends AppError {
+  readonly code = 'BANK_RECONCILED';
+  readonly httpStatus = 409;
+  constructor(message = 'Esto ya está dentro de una conciliación cerrada: reábrela primero.') { super(message); }
+}
+
+export class BankReconciliationStateError extends AppError {
+  readonly code = 'INVALID_RECONCILIATION_STATE';
+  readonly httpStatus = 409;
+  constructor(message: string) { super(message); }
+}

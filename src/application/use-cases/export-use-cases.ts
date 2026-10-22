@@ -2,12 +2,13 @@ import { addDays, localDateOf } from '../../domain/dates.js';
 import { ValidationError } from '../../domain/errors.js';
 import type { Receivable } from '../../domain/receivable.js';
 import type { PayableFilters, ReceivableFilters, UnitOfWork } from '../../domain/repositories.js';
-import { agingCsv, payablesAgingCsv, payablesCsv, receivablesCsv, statementCsv, supplierStatementCsv, type ReportLang } from '../../domain/report-csv.js';
+import { agingCsv, cashFlowCsv, payablesAgingCsv, payablesCsv, receivablesCsv, statementCsv, supplierStatementCsv, type ReportLang } from '../../domain/report-csv.js';
 import type { Payable } from '../../domain/payable.js';
 import { reportExportedEvent } from '../events.js';
 import type { Clock, UnitOfWorkGateway } from '../ports.js';
 import type { GetAgingUseCase, GetCustomerStatementUseCase } from './list-use-cases.js';
 import type { GetPayablesAgingUseCase, GetSupplierStatementUseCase } from './payable-list-use-cases.js';
+import type { GetCashFlowUseCase } from './bank-reconcile-use-cases.js';
 import { inTransaction } from './transaction.js';
 
 export interface CsvFile {
@@ -37,6 +38,7 @@ export class ExportReportsUseCase {
     private readonly timezone: string,
     private readonly getPayablesAging?: GetPayablesAgingUseCase,
     private readonly getSupplierStatement?: GetSupplierStatementUseCase,
+    private readonly getCashFlow?: GetCashFlowUseCase,
   ) {}
 
   async receivables(input: { organizationId: string; userId: string; lang: ReportLang; filters: Omit<ReceivableFilters, 'page' | 'pageSize'> }): Promise<CsvFile> {
@@ -116,6 +118,13 @@ export class ExportReportsUseCase {
     return { filename: `estado-de-cuenta-proveedor-${statement.asOf}.csv`, csv, rowCount };
   }
 
+  async cashFlow(input: { organizationId: string; userId: string; lang: ReportLang; weeks?: number; asOf?: string }): Promise<CsvFile> {
+    const flow = await this.getCashFlow!.execute({ organizationId: input.organizationId, weeks: input.weeks, asOf: input.asOf });
+    const { csv, rowCount } = cashFlowCsv(input.lang, flow);
+    await this.audit({ organizationId: input.organizationId, userId: input.userId, report: 'cash_flow', rowCount, filters: { asOf: flow.asOf, weeks: flow.weeks } });
+    return { filename: `flujo-de-caja-${flow.asOf}.csv`, csv, rowCount };
+  }
+
   /** Solo los filtros que de verdad se aplicaron (la bitácora no guarda claves vacías). */
   private describe(filters: Omit<ReceivableFilters, 'page' | 'pageSize'>, asOf: string): Record<string, unknown> {
     const out: Record<string, unknown> = { asOf };
@@ -128,7 +137,7 @@ export class ExportReportsUseCase {
     return out;
   }
 
-  private async audit(input: { organizationId: string; userId: string; report: 'receivables' | 'aging' | 'statement' | 'payables' | 'payables_aging' | 'supplier_statement'; rowCount: number; filters: Record<string, unknown>; customerId?: string; supplierId?: string }): Promise<void> {
+  private async audit(input: { organizationId: string; userId: string; report: 'receivables' | 'aging' | 'statement' | 'payables' | 'payables_aging' | 'supplier_statement' | 'cash_flow'; rowCount: number; filters: Record<string, unknown>; customerId?: string; supplierId?: string }): Promise<void> {
     await inTransaction(this.gateway, async (uow) => {
       await uow.outbox.add(
         reportExportedEvent({

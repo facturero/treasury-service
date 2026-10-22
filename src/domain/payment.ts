@@ -45,6 +45,8 @@ export interface Payment {
   paymentDate: string;
   method: PaymentMethod;
   accountRole: PaymentAccountRole;
+  /** Cuenta bancaria de tesorería (solo con rol `bank`). `null` = efectivo o sin elegir. */
+  bankAccountId: string | null;
   reference: string | null;
   currencyCode: string;
   /** Lo que salió de verdad de caja o banco. */
@@ -79,6 +81,8 @@ export interface PaymentInput {
   paymentDate: string;
   method: PaymentMethod;
   accountRole?: PaymentAccountRole | null;
+  /** Opcional: solo se admite si el rol contable es banco. */
+  bankAccountId?: string | null;
   reference?: string | null;
   /** Lo que sale de caja o banco, en centavos. Puede ser 0 si el pago solo consume anticipos. */
   totalCents: number;

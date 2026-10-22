@@ -354,6 +354,7 @@ export class PaymentModel extends Model<InferAttributes<PaymentModel>, InferCrea
   declare payment_date: string;
   declare method: string;
   declare account_role: string;
+  declare bank_account_id: string | null;
   declare reference: string | null;
   declare currency_code: string;
   declare total_cents: string | number;
@@ -388,6 +389,7 @@ PaymentModel.init(
     payment_date: { type: DataTypes.DATEONLY, allowNull: false },
     method: { type: DataTypes.STRING(20), allowNull: false },
     account_role: { type: DataTypes.STRING(10), allowNull: false },
+    bank_account_id: { type: DataTypes.CHAR(36), allowNull: true },
     reference: { type: DataTypes.STRING(100), allowNull: true },
     currency_code: { type: DataTypes.CHAR(3), allowNull: false },
     total_cents: { type: DataTypes.BIGINT, allowNull: false },
@@ -540,6 +542,7 @@ export class ReceiptModel extends Model<InferAttributes<ReceiptModel>, InferCrea
   declare receipt_date: string;
   declare method: string;
   declare account_role: string;
+  declare bank_account_id: string | null;
   declare reference: string | null;
   declare currency_code: string;
   declare total_cents: string | number;
@@ -571,6 +574,7 @@ ReceiptModel.init(
     receipt_date: { type: DataTypes.DATEONLY, allowNull: false },
     method: { type: DataTypes.STRING(20), allowNull: false },
     account_role: { type: DataTypes.STRING(10), allowNull: false },
+    bank_account_id: { type: DataTypes.CHAR(36), allowNull: true },
     reference: { type: DataTypes.STRING(100), allowNull: true },
     currency_code: { type: DataTypes.CHAR(3), allowNull: false },
     total_cents: { type: DataTypes.BIGINT, allowNull: false },
@@ -633,4 +637,224 @@ ReceiptAdvanceUseModel.init(
     created_at: { type: DataTypes.DATE, allowNull: false },
   },
   { sequelize, tableName: 'receipt_advance_uses', timestamps: false },
+);
+
+// ── Bancos, extractos y conciliación (bloque E) ──────────────────────────────
+
+export class BankAccountModel extends Model<InferAttributes<BankAccountModel>, InferCreationAttributes<BankAccountModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare name: string;
+  declare bank_name: string;
+  declare account_type: string;
+  declare account_last4: string | null;
+  declare currency_code: string;
+  declare opening_balance_cents: string | number;
+  declare opening_date: string;
+  declare is_active: boolean;
+  declare import_profile: unknown;
+  declare version: number;
+  declare created_at: Date;
+  declare updated_at: Date;
+}
+
+BankAccountModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    name: { type: DataTypes.STRING(80), allowNull: false },
+    bank_name: { type: DataTypes.STRING(120), allowNull: false },
+    account_type: { type: DataTypes.STRING(10), allowNull: false },
+    account_last4: { type: DataTypes.STRING(4), allowNull: true },
+    currency_code: { type: DataTypes.CHAR(3), allowNull: false },
+    opening_balance_cents: { type: DataTypes.BIGINT, allowNull: false },
+    opening_date: { type: DataTypes.DATEONLY, allowNull: false },
+    is_active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    import_profile: { type: DataTypes.JSON, allowNull: true },
+    version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'bank_accounts', timestamps: false },
+);
+
+export class BankMovementModel extends Model<InferAttributes<BankMovementModel>, InferCreationAttributes<BankMovementModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare bank_account_id: string | null;
+  declare source_type: string;
+  declare source_id: string;
+  declare movement_date: string;
+  declare amount_cents: string | number;
+  declare reference: string | null;
+  declare description: string;
+  declare kind: string | null;
+  declare status: string;
+  declare created_by: string | null;
+  declare version: number;
+  declare created_at: Date;
+  declare updated_at: Date;
+}
+
+BankMovementModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    bank_account_id: { type: DataTypes.CHAR(36), allowNull: true },
+    source_type: { type: DataTypes.STRING(12), allowNull: false },
+    source_id: { type: DataTypes.CHAR(36), allowNull: false },
+    movement_date: { type: DataTypes.DATEONLY, allowNull: false },
+    amount_cents: { type: DataTypes.BIGINT, allowNull: false },
+    reference: { type: DataTypes.STRING(100), allowNull: true },
+    description: { type: DataTypes.STRING(300), allowNull: false },
+    kind: { type: DataTypes.STRING(12), allowNull: true },
+    status: { type: DataTypes.STRING(10), allowNull: false },
+    created_by: { type: DataTypes.CHAR(36), allowNull: true },
+    version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'bank_movements', timestamps: false },
+);
+
+export class BankStatementModel extends Model<InferAttributes<BankStatementModel>, InferCreationAttributes<BankStatementModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare bank_account_id: string;
+  declare file_name: string | null;
+  declare content_hash: string;
+  declare period_start: string;
+  declare period_end: string;
+  declare line_count: number;
+  declare closing_balance_cents: string | number | null;
+  declare closing_date: string | null;
+  declare imported_by: string;
+  declare imported_at: Date;
+}
+
+BankStatementModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    bank_account_id: { type: DataTypes.CHAR(36), allowNull: false },
+    file_name: { type: DataTypes.STRING(200), allowNull: true },
+    content_hash: { type: DataTypes.CHAR(64), allowNull: false },
+    period_start: { type: DataTypes.DATEONLY, allowNull: false },
+    period_end: { type: DataTypes.DATEONLY, allowNull: false },
+    line_count: { type: DataTypes.INTEGER, allowNull: false },
+    closing_balance_cents: { type: DataTypes.BIGINT, allowNull: true },
+    closing_date: { type: DataTypes.DATEONLY, allowNull: true },
+    imported_by: { type: DataTypes.CHAR(36), allowNull: false },
+    imported_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'bank_statements', timestamps: false },
+);
+
+export class BankStatementLineModel extends Model<InferAttributes<BankStatementLineModel>, InferCreationAttributes<BankStatementLineModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare bank_account_id: string;
+  declare statement_id: string;
+  declare line_date: string;
+  declare description: string;
+  declare reference: string | null;
+  declare amount_cents: string | number;
+  declare balance_cents: string | number | null;
+  declare fingerprint: string;
+  declare status: string;
+  declare external_reason: string | null;
+  declare reconciliation_id: string | null;
+  declare created_at: Date;
+  declare updated_at: Date;
+}
+
+BankStatementLineModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    bank_account_id: { type: DataTypes.CHAR(36), allowNull: false },
+    statement_id: { type: DataTypes.CHAR(36), allowNull: false },
+    line_date: { type: DataTypes.DATEONLY, allowNull: false },
+    description: { type: DataTypes.STRING(300), allowNull: false },
+    reference: { type: DataTypes.STRING(80), allowNull: true },
+    amount_cents: { type: DataTypes.BIGINT, allowNull: false },
+    balance_cents: { type: DataTypes.BIGINT, allowNull: true },
+    fingerprint: { type: DataTypes.STRING(80), allowNull: false },
+    status: { type: DataTypes.STRING(10), allowNull: false },
+    external_reason: { type: DataTypes.STRING(300), allowNull: true },
+    reconciliation_id: { type: DataTypes.CHAR(36), allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'bank_statement_lines', timestamps: false },
+);
+
+export class BankMatchModel extends Model<InferAttributes<BankMatchModel>, InferCreationAttributes<BankMatchModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare bank_account_id: string;
+  declare line_id: string;
+  declare movement_id: string;
+  declare amount_cents: string | number;
+  declare method: string;
+  declare matched_by: string;
+  declare matched_at: Date;
+  declare reconciliation_id: string | null;
+}
+
+BankMatchModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    bank_account_id: { type: DataTypes.CHAR(36), allowNull: false },
+    line_id: { type: DataTypes.CHAR(36), allowNull: false },
+    movement_id: { type: DataTypes.CHAR(36), allowNull: false },
+    amount_cents: { type: DataTypes.BIGINT, allowNull: false },
+    method: { type: DataTypes.STRING(10), allowNull: false },
+    matched_by: { type: DataTypes.CHAR(36), allowNull: false },
+    matched_at: { type: DataTypes.DATE, allowNull: false },
+    reconciliation_id: { type: DataTypes.CHAR(36), allowNull: true },
+  },
+  { sequelize, tableName: 'bank_matches', timestamps: false },
+);
+
+export class BankReconciliationModel extends Model<InferAttributes<BankReconciliationModel>, InferCreationAttributes<BankReconciliationModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare bank_account_id: string;
+  declare cutoff_date: string;
+  declare statement_balance_cents: string | number;
+  declare register_balance_cents: string | number;
+  declare pending_cents: string | number;
+  declare difference_cents: string | number;
+  declare status: string;
+  declare closed_by: string | null;
+  declare closed_at: Date | null;
+  declare reopened_by: string | null;
+  declare reopened_at: Date | null;
+  declare notes: string | null;
+  declare version: number;
+  declare created_at: Date;
+}
+
+BankReconciliationModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    bank_account_id: { type: DataTypes.CHAR(36), allowNull: false },
+    cutoff_date: { type: DataTypes.DATEONLY, allowNull: false },
+    statement_balance_cents: { type: DataTypes.BIGINT, allowNull: false },
+    register_balance_cents: { type: DataTypes.BIGINT, allowNull: false },
+    pending_cents: { type: DataTypes.BIGINT, allowNull: false },
+    difference_cents: { type: DataTypes.BIGINT, allowNull: false },
+    status: { type: DataTypes.STRING(10), allowNull: false },
+    closed_by: { type: DataTypes.CHAR(36), allowNull: true },
+    closed_at: { type: DataTypes.DATE, allowNull: true },
+    reopened_by: { type: DataTypes.CHAR(36), allowNull: true },
+    reopened_at: { type: DataTypes.DATE, allowNull: true },
+    notes: { type: DataTypes.STRING(500), allowNull: true },
+    version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'bank_reconciliations', timestamps: false },
 );
