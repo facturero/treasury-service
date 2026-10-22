@@ -405,6 +405,295 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { description: 'REMINDERS_DISABLED: los recordatorios están apagados' }
         '502': { description: 'CATALOG_UNAVAILABLE: customer-service u organization-service no responden' }
+  /treasury/payables/export:
+    get:
+      tags: [Exportar]
+      summary: Exporta las deudas a proveedores a CSV (mismos filtros que el listado, sin paginar)
+      description: 'Permiso: `payable:export`. Cada archivo emite `treasury.report.exported` (reporte `payables`). Neutraliza fórmulas. Más de 20.000 filas se rechaza (422).'
+      x-permission: payable:export
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: supplierId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string }, description: 'Uno o varios estados separados por coma' }
+        - { name: overdueOnly, in: query, schema: { type: boolean } }
+        - { name: dueSoon, in: query, schema: { type: boolean }, description: 'Solo lo que vence en los próximos 7 días' }
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: lang, in: query, description: 'Idioma de los encabezados', schema: { type: string, enum: [es, en, fr], default: es } }
+      responses:
+        '200':
+          description: 'Archivo CSV (UTF-8 con BOM, coma, CRLF). `Content-Disposition: attachment`, `Cache-Control: no-store`.'
+          content: { text/csv: { schema: { type: string } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/payables/aging/export:
+    get:
+      tags: [Exportar]
+      summary: Exporta la antigüedad de las deudas a proveedores a CSV
+      description: 'Permiso: `payable:export`. Emite `treasury.report.exported` (reporte `payables_aging`).'
+      x-permission: payable:export
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+        - { name: lang, in: query, description: 'Idioma de los encabezados', schema: { type: string, enum: [es, en, fr], default: es } }
+      responses:
+        '200':
+          description: 'Archivo CSV (UTF-8 con BOM, coma, CRLF). `Content-Disposition: attachment`, `Cache-Control: no-store`.'
+          content: { text/csv: { schema: { type: string } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/suppliers/{id}/statement/export:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Exportar]
+      summary: Exporta el estado de cuenta de un proveedor a CSV
+      description: 'Permiso: `payable:export`. Emite `treasury.report.exported` (reporte `supplier_statement`, con `supplierId`).'
+      x-permission: payable:export
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+        - { name: lang, in: query, description: 'Idioma de los encabezados', schema: { type: string, enum: [es, en, fr], default: es } }
+      responses:
+        '200':
+          description: 'Archivo CSV (UTF-8 con BOM, coma, CRLF). `Content-Disposition: attachment`, `Cache-Control: no-store`.'
+          content: { text/csv: { schema: { type: string } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/payables:
+    get:
+      tags: [Cuentas por pagar]
+      summary: Lista las deudas a proveedores
+      description: >-
+        Permiso: `payable:read`. Cada deuda nace sola de una factura de compra contabilizada (`purchasing.bill.posted`) con el vencimiento de la
+        factura, o de un saldo inicial. El saldo es neto de pagos y retenciones y lo calcula el servidor; «vencidas» y «por vencer» usan la fecha
+        de corte del servidor.
+      x-permission: payable:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: supplierId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string }, description: 'open,partial,paid,cancelled (varios, separados por coma)' }
+        - { name: overdueOnly, in: query, schema: { type: boolean } }
+        - { name: dueSoon, in: query, schema: { type: boolean }, description: 'Solo lo que vence en los próximos 7 días' }
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 25, maximum: 100 } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/payables/aging:
+    get:
+      tags: [Cuentas por pagar]
+      summary: Antigüedad de lo que la empresa debe (por vencer, corriente y vencido por tramos)
+      description: 'Permiso: `payable:read`. Por proveedor y en total. Solo deudas vivas con saldo positivo.'
+      x-permission: payable:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/payables/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Cuentas por pagar]
+      summary: Una deuda con su historial de aplicaciones (pagos y retenciones)
+      description: 'Permiso: `payable:read`.'
+      x-permission: payable:read
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: PAYABLE_NOT_FOUND }
+  /treasury/suppliers/{id}/statement:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Cuentas por pagar]
+      summary: Estado de cuenta de un proveedor
+      description: >-
+        Permiso: `payable:read`. `netCents` es lo que se le debe (deuda − pagos − retenciones). Los anticipos a proveedores van aparte
+        (`advanceCents`): viven en «anticipos a proveedores», no en `payables`.
+      x-permission: payable:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: asOf, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /treasury/payable-opening-balances:
+    post:
+      tags: [Saldos iniciales]
+      summary: Carga las deudas iniciales a proveedores (una sola vez por fecha de corte)
+      description: >-
+        Permiso: `opening_balance:load`. Las deudas ya existentes no se recuperan solas. NO genera asiento: contabilidad necesita su asiento de
+        apertura por el mismo total. Cada proveedor se valida contra compras (422 con el índice de la línea; compras caído → 502).
+      x-permission: opening_balance:load
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '201': { description: Creada }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'OPENING_BALANCE_ALREADY_LOADED' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502': { description: 'CATALOG_UNAVAILABLE' }
+  /treasury/payments/settings:
+    get:
+      tags: [Pagos]
+      summary: Configuración de pagos (umbral de aprobación)
+      description: 'Permiso: `payment:approve` (solo Administrador). `approvalThresholdCents` null = sin aprobación (nace así).'
+      x-permission: payment:approve
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Pagos]
+      summary: Fija el umbral de aprobación de pagos
+      description: 'Permiso: `payment:approve`. Un pago que llega al umbral exige que OTRA persona lo apruebe antes de contabilizarse. Emite `treasury.payment_settings.updated` con valor anterior y nuevo.'
+      x-permission: payment:approve
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [approvalThresholdCents], properties: { approvalThresholdCents: { type: integer, nullable: true, minimum: 1 } }, additionalProperties: false } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/payments:
+    get:
+      tags: [Pagos]
+      summary: Lista los pagos a proveedores
+      description: 'Permiso: `payment:read`.'
+      x-permission: payment:read
+      x-plugin: finance.accounts_receivable_payable
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: supplierId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string }, description: 'draft,approved,posted,voided' }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 25, maximum: 100 } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Pagos]
+      summary: Crea un pago en BORRADOR (no toca saldos ni gasta número)
+      description: >-
+        Permiso: `payment:create`. El proveedor va en el cuerpo y debe existir en compras. Avisa pronto de lo que fallará (factura de otro
+        proveedor, saldo insuficiente, con el índice de la línea); la comprobación que vale es la de contabilizar. En cheque y transferencia la
+        `reference` es obligatoria. Lo pagado de más queda como anticipo a proveedores.
+      x-permission: payment:create
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '201': { description: Creado }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '502': { description: 'CATALOG_UNAVAILABLE: compras o contabilidad no responden' }
+  /treasury/payments/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      tags: [Pagos]
+      summary: Un pago
+      description: 'Permiso: `payment:read`.'
+      x-permission: payment:read
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: PAYMENT_NOT_FOUND }
+    put:
+      tags: [Pagos]
+      summary: 'Edita un pago en borrador (si estaba aprobado, pierde la aprobación)'
+      description: 'Permiso: `payment:create`. Un pago contabilizado no se edita: se anula y se rehace. `expectedVersion` evita pisar lo que otra persona cambió.'
+      x-permission: payment:create
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: INVALID_PAYMENT_STATE }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/payments/{id}/approve:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Pagos]
+      summary: Aprueba un pago (separación de funciones)
+      description: >-
+        Permiso: `payment:approve`. Solo si la organización definió un umbral y el pago lo alcanza (si no, 409), y NUNCA por quien lo creó (403
+        PAYMENT_SELF_APPROVAL). Idempotente.
+      x-permission: payment:approve
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: INVALID_PAYMENT_STATE }
+  /treasury/payments/{id}/post:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Pagos]
+      summary: Contabiliza un pago (aplica a las facturas, asigna PG-AAAA-NNNNNN y publica el evento del asiento)
+      description: >-
+        Permiso: `payment:create`. Idempotente. Con umbral definido y alcanzado exige un pago aprobado (409 PAYMENT_APPROVAL_REQUIRED). Nunca
+        se paga más que el saldo neto de la factura (422 con el campo). `READ COMMITTED` y bloqueo de filas en orden fijo.
+      x-permission: payment:create
+      x-plugin: finance.accounts_receivable_payable
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'PAYMENT_APPROVAL_REQUIRED / INVALID_PAYMENT_STATE' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /treasury/payments/{id}/void:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Pagos]
+      summary: Anula un pago contabilizado, con motivo
+      description: >-
+        Permiso: `payment:void` (solo Administrador). Nada se borra: las aplicaciones se marcan anuladas y contabilidad reversa el asiento.
+        Si otro pago ya consumió el anticipo de este: 409 PAYMENT_ADVANCE_IN_USE. Idempotente.
+      x-permission: payment:void
+      x-plugin: finance.accounts_receivable_payable
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [reason], properties: { reason: { type: string, minLength: 5 } }, additionalProperties: false } } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'INVALID_PAYMENT_STATE / PAYMENT_ADVANCE_IN_USE' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 components:
   securitySchemes:
     gatewayHeaders:

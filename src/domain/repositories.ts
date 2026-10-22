@@ -1,6 +1,16 @@
 import type { Receipt, ReceiptAdvanceUse, ReceiptStatus } from './receipt.js';
 import type { ReminderSettings } from './reminder.js';
 import type {
+  Payable,
+  PayableApplication,
+  PayableOpeningLoad,
+  PayableSourceType,
+  PayableStatus,
+  SupplierAdvance,
+  UnmatchedWithholding,
+} from './payable.js';
+import type { Payment, PaymentAdvanceUse, PaymentSettings, PaymentStatus } from './payment.js';
+import type {
   CreditApplication,
   CustomerAdvance,
   CustomerAdvanceApplication,
@@ -154,6 +164,95 @@ export interface ReminderRepository {
   add(entry: { organizationId: string; receivableId: string; customerId: string; reminderDate: string; trigger: 'scheduled' | 'manual'; sentBy: string | null; at: Date }): Promise<void>;
 }
 
+export interface PayableFilters {
+  supplierId?: string;
+  status?: PayableStatus[];
+  /** Solo las deudas ya vencidas (`due_date` anterior a la fecha de corte) que siguen vivas. */
+  overdueOnly?: boolean;
+  /** Fecha de corte para vencidas / por vencer (`AAAA-MM-DD`). */
+  asOf?: string;
+  /** Solo las vivas que vencen entre `asOf` y `dueBefore` (por vencer). */
+  dueBefore?: string;
+  /** Rango de fecha de emisión. */
+  from?: string;
+  to?: string;
+  /** Busca en el número del documento, el número interno y el nombre del proveedor. */
+  q?: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface PayableRepository {
+  /** Con `lock`, bloquea la fila hasta el final de la transacción (pagar, anular, aplicar una retención). */
+  findById(organizationId: string, id: string, options?: { lock?: boolean }): Promise<Payable | null>;
+  /** Idempotencia: `UNIQUE (organization_id, source_type, source_id)`. */
+  findBySource(organizationId: string, sourceType: PayableSourceType, sourceId: string): Promise<Payable | null>;
+  /** Las deudas de un proveedor por su RUC (la retención solo trae RUC y número del sustento). */
+  listBySupplierIdentification(organizationId: string, identification: string): Promise<Payable[]>;
+  list(organizationId: string, filters: PayableFilters): Promise<Page<Payable>>;
+  /** Todas las deudas de la organización (o de un proveedor): reportes, sin paginar. */
+  listBalances(organizationId: string, options?: { supplierId?: string }): Promise<Payable[]>;
+  save(payable: Payable, expectedVersion?: number): Promise<void>;
+}
+
+export interface PayableApplicationRepository {
+  listByPayable(organizationId: string, payableIds: readonly string[]): Promise<PayableApplication[]>;
+  /** `UNIQUE (organization_id, payable_id, source_type, source_id)`: lanza la violación si ya estaba. */
+  add(application: PayableApplication): Promise<void>;
+  /** Marca como anuladas (no borra) las aplicaciones de un pago o de una retención. Devuelve las que cambiaron. */
+  reverseBySource(organizationId: string, sourceType: PayableApplication['sourceType'], sourceId: string, at: Date): Promise<PayableApplication[]>;
+}
+
+export interface SupplierAdvanceRepository {
+  findById(organizationId: string, id: string, options?: { lock?: boolean }): Promise<SupplierAdvance | null>;
+  findByOrigin(organizationId: string, originId: string): Promise<SupplierAdvance | null>;
+  /** Anticipos vigentes del proveedor, con lo consumido ya derivado. */
+  listBySupplier(organizationId: string, supplierId: string): Promise<SupplierAdvance[]>;
+  save(advance: SupplierAdvance, expectedVersion?: number): Promise<void>;
+}
+
+export interface PaymentFilters {
+  supplierId?: string;
+  status?: PaymentStatus[];
+  from?: string;
+  to?: string;
+  /** Busca en el número, la referencia y el nombre del proveedor. */
+  q?: string;
+  page: number;
+  pageSize: number;
+}
+
+export interface PaymentRepository {
+  findById(organizationId: string, id: string, options?: { lock?: boolean }): Promise<Payment | null>;
+  list(organizationId: string, filters: PaymentFilters): Promise<Page<Payment>>;
+  save(payment: Payment, expectedVersion?: number): Promise<void>;
+  /** Siguiente número de la serie (organización, año). Bloquea la fila del contador. */
+  nextSequence(organizationId: string, year: number): Promise<number>;
+}
+
+export interface PaymentAdvanceUseRepository {
+  add(organizationId: string, paymentId: string, use: PaymentAdvanceUse, at: Date): Promise<void>;
+  reverseByPayment(organizationId: string, paymentId: string, at: Date): Promise<void>;
+}
+
+export interface PaymentSettingsRepository {
+  find(organizationId: string): Promise<PaymentSettings | null>;
+  save(settings: PaymentSettings): Promise<void>;
+}
+
+export interface UnmatchedWithholdingRepository {
+  /** `UNIQUE (organization_id, withholding_id)`: lanza la violación si ya estaba. */
+  add(withholding: UnmatchedWithholding): Promise<void>;
+  /** Las que esperan a una factura de ese proveedor (por RUC). */
+  listBySupplierIdentification(organizationId: string, identification: string): Promise<UnmatchedWithholding[]>;
+  remove(organizationId: string, id: string): Promise<void>;
+}
+
+export interface PayableOpeningLoadRepository {
+  findByCutoff(organizationId: string, cutoffDate: string): Promise<PayableOpeningLoad | null>;
+  save(load: PayableOpeningLoad): Promise<void>;
+}
+
 export interface OutboxRepository {
   add(event: DomainEvent): Promise<void>;
 }
@@ -169,5 +268,13 @@ export interface UnitOfWork {
   receiptAdvanceUses: ReceiptAdvanceUseRepository;
   reminderSettings: ReminderSettingsRepository;
   reminders: ReminderRepository;
+  payables: PayableRepository;
+  payableApplications: PayableApplicationRepository;
+  supplierAdvances: SupplierAdvanceRepository;
+  payments: PaymentRepository;
+  paymentAdvanceUses: PaymentAdvanceUseRepository;
+  paymentSettings: PaymentSettingsRepository;
+  unmatchedWithholdings: UnmatchedWithholdingRepository;
+  payableOpeningLoads: PayableOpeningLoadRepository;
   outbox: OutboxRepository;
 }

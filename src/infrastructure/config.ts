@@ -15,6 +15,8 @@ const schema = z.object({
   INTERNAL_USER_ID: z.string().default('00000000-0000-0000-0000-000000000000'),
   // Clientes (server-to-server): los saldos iniciales solo se aceptan a nombre de un cliente que exista.
   CUSTOMER_SERVICE_URL: z.string().default('http://customer-service-node:3004'),
+  // Compras (server-to-server): los pagos y saldos iniciales solo se aceptan a nombre de un proveedor que exista.
+  PURCHASING_SERVICE_URL: z.string().default('http://purchasing-service-node:3017'),
   // Organización (server-to-server): el nombre con el que se firma el recordatorio de cobro.
   ORGANIZATION_SERVICE_URL: z.string().default('http://organization-service:3002'),
   // Contabilidad (server-to-server, sin pasar por el gateway): moneda base, huso y reglas de cobro.

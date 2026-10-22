@@ -102,6 +102,75 @@ channels:
         payload:
           $ref: '#/components/schemas/ReportExportedPayload'
 
+  treasury.payable.opened:
+    publish:
+      summary: Deuda a un proveedor abierta (factura de compra contabilizada o saldo inicial)
+      message:
+        payload:
+          $ref: '#/components/schemas/PayablePayload'
+  treasury.payable.cancelled:
+    publish:
+      summary: 'Deuda anulada: la factura de compra se anuló (lleva el motivo)'
+      message:
+        payload:
+          $ref: '#/components/schemas/PayablePayload'
+  treasury.payable.credited:
+    publish:
+      summary: Un pago o una retención redujo una deuda (un evento por cada importe aplicado)
+      message:
+        payload:
+          $ref: '#/components/schemas/PayableCreditedPayload'
+  treasury.supplier_advance.opened:
+    publish:
+      summary: 'Anticipo a un proveedor: lo pagado de más, que un pago posterior puede consumir'
+      message:
+        payload:
+          $ref: '#/components/schemas/SupplierAdvancePayload'
+  treasury.payable_opening_balance.loaded:
+    publish:
+      summary: Carga de saldos iniciales de deudas a proveedores (qué, cuánto y por qué)
+      message:
+        payload:
+          $ref: '#/components/schemas/PayableOpeningPayload'
+  treasury.payment.created:
+    publish:
+      summary: Pago a un proveedor creado (borrador)
+      message:
+        payload:
+          $ref: '#/components/schemas/PaymentPayload'
+  treasury.payment.updated:
+    publish:
+      summary: Pago a un proveedor modificado (borrador)
+      message:
+        payload:
+          $ref: '#/components/schemas/PaymentPayload'
+  treasury.payment.approved:
+    publish:
+      summary: Pago aprobado por otra persona que su creador (separación de funciones)
+      message:
+        payload:
+          $ref: '#/components/schemas/PaymentApprovedPayload'
+  treasury.payment.posted:
+    publish:
+      summary: 'Pago contabilizado: es el evento del que contabilidad asienta (Dr proveedores / Cr caja o banco)'
+      description: >-
+        Lleva TODO lo que la regla del asiento necesita; la fecha del pago es de calendario (`AAAA-MM-DD`, sin hora). Lo consume `accounting-service` (`sourceType: payment`).
+      message:
+        payload:
+          $ref: '#/components/schemas/PaymentPostedPayload'
+  treasury.payment.voided:
+    publish:
+      summary: Pago anulado (lleva el motivo y quién lo contabilizó); contabilidad reversa su asiento
+      message:
+        payload:
+          $ref: '#/components/schemas/PaymentVoidedPayload'
+  treasury.payment_settings.updated:
+    publish:
+      summary: El umbral de aprobación de pagos cambió (valor anterior y nuevo)
+      message:
+        payload:
+          $ref: '#/components/schemas/PaymentSettingsPayload'
+
   billing.invoice.issued:
     subscribe:
       summary: Factura emitida (publica billing-service; aquí abre partida de cartera)
@@ -176,6 +245,37 @@ channels:
                 postedBy: { type: string, format: uuid, nullable: true }
                 voidedBy: { type: string, format: uuid }
                 voidedAt: { type: string, format: date-time, nullable: true, description: 'Instante de la anulación: contabilidad fecha la reversa con él' }
+  purchasing.bill.posted:
+    subscribe:
+      summary: Factura de compra contabilizada (publica purchasing-service; aquí abre una deuda por pagar)
+      description: >-
+        Gemela de la regla de contabilidad: la liquidación (docType 03), una moneda distinta de la base, un documento anterior a la fecha de
+        arranque, la contabilización automática apagada o una factura que no cuadra subtotal + impuestos = total NO abren deuda (así las cuentas
+        por pagar y el libro mayor no divergen). El vencimiento es el de la factura. Idempotente por `UNIQUE (organización, origen, id)`.
+      message:
+        payload:
+          $ref: '#/components/schemas/BillPostedPayload'
+  purchasing.bill.voided:
+    subscribe:
+      summary: Factura de compra anulada (publica purchasing-service; aquí anula su deuda)
+      description: >-
+        La deuda pasa a `cancelled`; lo ya pagado queda a favor de la empresa. Si la anulación llega ANTES que la factura se guarda una deuda
+        «fantasma» ya anulada para que la factura posterior no abra nada.
+      message:
+        payload:
+          $ref: '#/components/schemas/BillPostedPayload'
+  fiscal.ec.withholding.issued:
+    subscribe:
+      summary: Retención autorizada por el SRI (publica fiscal-ecuador; aquí reduce la deuda de la factura que cita)
+      description: >-
+        NO trae id de factura de compra: se empareja por RUC del proveedor + número del documento sustento. Nunca falla por «no hay deuda»:
+        sin RUC/sustento válido o con un sustento que no es factura de compra se IGNORA; con ambos válidos pero sin deuda todavía queda en
+        `unmatched_withholdings` y se aplica cuando llegue la factura. Idempotente. No recorta al saldo: contabilidad asienta `Dr payables` por
+        el total retenido.
+      message:
+        payload:
+          $ref: '#/components/schemas/WithholdingIssuedPayload'
+
 components:
   schemas:
     ReceivablePayload:
@@ -272,6 +372,137 @@ components:
         rowCount: { type: integer }
         exportedBy: { type: string, format: uuid }
         customerId: { type: string, format: uuid, description: 'Solo en `statement`' }
+    PayablePayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        payableId: { type: string, format: uuid }
+        sourceType: { type: string, enum: [purchase_bill, initial_balance] }
+        sourceId: { type: string }
+        documentNumber: { type: string, nullable: true, description: 'Factura del proveedor' }
+        internalNumber: { type: string, nullable: true, description: 'FC-AAAA-NNNNNN' }
+        supplierId: { type: string, format: uuid }
+        supplierName: { type: string }
+        supplierIdentification: { type: string, nullable: true }
+        amountCents: { type: integer }
+        currencyCode: { type: string }
+        issueDate: { type: string, format: date }
+        dueDate: { type: string, format: date }
+        reason: { type: string, nullable: true, description: 'Solo en `cancelled`' }
+    PayableCreditedPayload:
+      allOf:
+        - $ref: '#/components/schemas/PayablePayload'
+        - type: object
+          properties:
+            creditType: { type: string, enum: [payment, withholding] }
+            creditSourceId: { type: string }
+            creditDocumentNumber: { type: string, nullable: true }
+            appliedCents: { type: integer }
+    SupplierAdvancePayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        advanceId: { type: string, format: uuid }
+        supplierId: { type: string, format: uuid }
+        supplierName: { type: string }
+        supplierIdentification: { type: string, nullable: true }
+        originId: { type: string, format: uuid, description: 'Id del pago que lo originó' }
+        documentNumber: { type: string, nullable: true }
+        amountCents: { type: integer }
+        currencyCode: { type: string }
+    PayableOpeningPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        loadId: { type: string, format: uuid }
+        cutoffDate: { type: string, format: date }
+        supplierCount: { type: integer, description: Número de líneas de la carga }
+        totalCents: { type: integer }
+        loadedBy: { type: string, format: uuid }
+        reason: { type: string }
+    PaymentPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        paymentId: { type: string, format: uuid }
+        number: { type: string, nullable: true, example: PG-2026-000001 }
+        status: { type: string, enum: [draft, approved, posted, voided] }
+        supplierId: { type: string, format: uuid }
+        supplierName: { type: string }
+        supplierIdentification: { type: string, nullable: true }
+        paymentDate: { type: string, format: date }
+        method: { type: string, enum: [cash, transfer, check, other] }
+        accountRole: { type: string, enum: [cash, bank] }
+        reference: { type: string, nullable: true }
+        currencyCode: { type: string }
+        totalCents: { type: integer, description: Lo que salió de caja o banco }
+        advanceUsedCents: { type: integer, description: Anticipos a proveedores que consume }
+        appliedCents: { type: integer, description: Aplicado a facturas }
+        advanceCents: { type: integer, description: Excedente que queda como anticipo }
+        lineCount: { type: integer }
+        lines:
+          type: array
+          description: Hasta 20; el total real va en `lineCount`
+          items: { type: object, properties: { payableId: { type: string, format: uuid }, documentNumber: { type: string, nullable: true }, appliedCents: { type: integer } } }
+        advanceUses: { type: array, items: { type: object, properties: { advanceId: { type: string, format: uuid }, usedCents: { type: integer } } } }
+    PaymentApprovedPayload:
+      allOf:
+        - $ref: '#/components/schemas/PaymentPayload'
+        - type: object
+          properties:
+            createdBy: { type: string, format: uuid }
+            approvedBy: { type: string, format: uuid }
+    PaymentPostedPayload:
+      allOf:
+        - $ref: '#/components/schemas/PaymentPayload'
+        - type: object
+          properties:
+            createdBy: { type: string, format: uuid }
+            approvedBy: { type: string, format: uuid, nullable: true }
+            postedBy: { type: string, format: uuid }
+    PaymentVoidedPayload:
+      allOf:
+        - $ref: '#/components/schemas/PaymentPayload'
+        - type: object
+          properties:
+            reason: { type: string }
+            postedBy: { type: string, format: uuid, nullable: true }
+            voidedBy: { type: string, format: uuid }
+            voidedAt: { type: string, format: date-time }
+    PaymentSettingsPayload:
+      type: object
+      properties:
+        organizationId: { type: string, format: uuid }
+        approvalThresholdCents: { type: integer, nullable: true }
+        previousApprovalThresholdCents: { type: integer, nullable: true }
+        updatedBy: { type: string, format: uuid, nullable: true }
+    BillPostedPayload:
+      type: object
+      description: Campos que treasury-service lee de `purchasing.bill.posted|voided`; el resto se acepta y se ignora.
+      properties:
+        organizationId: { type: string, format: uuid }
+        billId: { type: string, format: uuid }
+        internalNumber: { type: string, nullable: true }
+        supplierId: { type: string, format: uuid }
+        supplier: { type: object, properties: { identification: { type: string }, legalName: { type: string } } }
+        docType: { type: string, example: '01' }
+        supplierDocument: { type: string, example: '001-001-000000123' }
+        issueDate: { type: string, format: date }
+        dueDate: { type: string, format: date }
+        currencyCode: { type: string }
+        totalCents: { type: integer }
+        voidReason: { type: string, nullable: true }
+    WithholdingIssuedPayload:
+      type: object
+      description: Campos que treasury-service lee de `fiscal.ec.withholding.issued`.
+      properties:
+        organizationId: { type: string, format: uuid }
+        withholdingId: { type: string }
+        number: { type: string, nullable: true }
+        issueDate: { type: string, format: date, nullable: true }
+        supplier: { type: object, properties: { identification: { type: string } } }
+        support: { type: object, properties: { documentCode: { type: string }, number: { type: string, example: 001-001-000000123 } } }
+        totalWithheldCents: { type: integer }
     InvoiceIssuedPayload:
       type: object
       description: Campos que treasury-service lee de `billing.invoice.issued`; el resto se acepta y se ignora.

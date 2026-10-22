@@ -15,6 +15,26 @@ import type {
   RunRemindersUseCase,
   SetReminderSettingsUseCase,
 } from '../../application/use-cases/reminder-use-cases.js';
+import type {
+  GetPayableDetailUseCase,
+  GetPayablesAgingUseCase,
+  GetSupplierStatementUseCase,
+  ListPayablesUseCase,
+  LoadPayableOpeningBalancesUseCase,
+} from '../../application/use-cases/payable-list-use-cases.js';
+import type {
+  ApprovePaymentUseCase,
+  CreatePaymentUseCase,
+  GetPaymentSettingsUseCase,
+  GetPaymentUseCase,
+  ListPaymentsUseCase,
+  PostPaymentUseCase,
+  SetPaymentSettingsUseCase,
+  UpdatePaymentUseCase,
+  VoidPaymentUseCase,
+} from '../../application/use-cases/payment-use-cases.js';
+import { requiresApproval, type Payment, type PaymentInput, type PaymentStatus as PaymentStatusT } from '../../domain/payment.js';
+import type { PayableStatus } from '../../domain/payable.js';
 import type { LoadOpeningBalancesUseCase } from '../../application/use-cases/opening-balance-use-case.js';
 import type {
   CreateReceiptUseCase,
@@ -29,17 +49,25 @@ import type { ReceivableStatus } from '../../domain/receivable.js';
 import { requireOrganization, requirePermission, requireUser, type ContextVariables } from './middlewares.js';
 import {
   agingQuerySchema,
+  createPaymentSchema,
   createReceiptSchema,
   customerTermsSchema,
   exportAgingQuerySchema,
+  exportPayablesQuerySchema,
   exportReceivablesQuerySchema,
   exportStatementQuerySchema,
   openingBalanceSchema,
+  payableOpeningBalanceSchema,
+  payableQuerySchema,
+  paymentQuerySchema,
+  paymentSettingsSchema,
   receiptQuerySchema,
   receivableQuerySchema,
   reminderSettingsSchema,
   statementQuerySchema,
+  updatePaymentSchema,
   updateReceiptSchema,
+  voidPaymentSchema,
   voidReceiptSchema,
   validateJson,
   validateQuery,
@@ -48,6 +76,13 @@ import {
   toAgingJSON,
   toCustomerTermsJSON,
   toOpeningBalanceLoadJSON,
+  toPayableDetailJSON,
+  toPayableJSON,
+  toPayableOpeningLoadJSON,
+  toPayablesAgingJSON,
+  toPaymentJSON,
+  toPaymentSettingsJSON,
+  toSupplierStatementJSON,
   toReceiptJSON,
   toReceivableDetailJSON,
   toReceivableJSON,
@@ -81,6 +116,20 @@ export interface AppDependencies {
     setReminderSettings: SetReminderSettingsUseCase;
     previewReminders: PreviewRemindersUseCase;
     runReminders: RunRemindersUseCase;
+    listPayables: ListPayablesUseCase;
+    getPayableDetail: GetPayableDetailUseCase;
+    getPayablesAging: GetPayablesAgingUseCase;
+    getSupplierStatement: GetSupplierStatementUseCase;
+    loadPayableOpeningBalances: LoadPayableOpeningBalancesUseCase;
+    listPayments: ListPaymentsUseCase;
+    getPayment: GetPaymentUseCase;
+    createPayment: CreatePaymentUseCase;
+    updatePayment: UpdatePaymentUseCase;
+    approvePayment: ApprovePaymentUseCase;
+    postPayment: PostPaymentUseCase;
+    voidPayment: VoidPaymentUseCase;
+    getPaymentSettings: GetPaymentSettingsUseCase;
+    setPaymentSettings: SetPaymentSettingsUseCase;
   };
   corsOrigin: string;
 }
@@ -101,6 +150,16 @@ const csvResponse = (c: Ctx, file: CsvFile) =>
   });
 
 const org = (c: Ctx) => c.get('organizationId');
+
+/**
+ * Un pago con `requiresApproval`: ¿llega al umbral de aprobación de la organización? Quien crea o contabiliza pagos (el Contador) no puede
+ * LEER el umbral (es del Administrador), pero sí necesita saber si ESTE pago necesita aprobación: sin ese dato la pantalla le ofrecería
+ * «Pagar» sobre uno que el servidor va a rechazar. Solo viaja el sí/no, no el importe del umbral.
+ */
+const paymentJSON = async (uc: AppDependencies['useCases'], organizationId: string, payment: Payment) => ({
+  ...toPaymentJSON(payment),
+  requiresApproval: payment.status === 'draft' && requiresApproval(await uc.getPaymentSettings.execute({ organizationId }), payment),
+});
 const user = (c: Ctx) => c.get('userId');
 
 /**
@@ -248,6 +307,102 @@ export function treasuryRoutes(deps: AppDependencies): Hono<Vars> {
   r.post('/treasury/receipts/:id/void', ...base, requireUser(), requirePermission('receipt:void'), validateJson(voidReceiptSchema), async (c) => {
     const { reason } = c.req.valid('json' as never) as z.infer<typeof voidReceiptSchema>;
     return c.json(toReceiptJSON(await uc.voidReceipt.execute({ organizationId: org(c), receiptId: c.req.param('id'), userId: user(c), reason })));
+  });
+
+  // ══ Cuentas por pagar y pagos (bloque D) ══════════════════════════════════════
+  // Mismas defensas que cobros: una ruta por método y permiso, `export`/`aging` ANTES de `/:id`. Pagar y aprobar son permisos distintos
+  // (separación de funciones); anular y fijar el umbral de aprobación son solo del Administrador.
+  r.get('/treasury/payables', ...base, requirePermission('payable:read'), validateQuery(payableQuerySchema), async (c) => {
+    const q = c.req.valid('query' as never) as z.infer<typeof payableQuerySchema>;
+    const { page, asOf } = await uc.listPayables.execute({
+      organizationId: org(c),
+      filters: { q: q.q, supplierId: q.supplierId, status: q.status as PayableStatus[] | undefined, overdueOnly: q.overdueOnly, asOf: q.asOf, from: q.from, to: q.to, page: q.page, pageSize: q.pageSize },
+      dueSoon: q.dueSoon,
+    });
+    return c.json({ ...page, asOf, items: page.items.map(toPayableJSON) });
+  });
+
+  r.get('/treasury/payables/export', ...base, requireUser(), requirePermission('payable:export'), validateQuery(exportPayablesQuerySchema), async (c) => {
+    const { lang, dueSoon, ...q } = c.req.valid('query' as never) as z.infer<typeof exportPayablesQuerySchema>;
+    return csvResponse(c, await uc.exportReports.payables({
+      organizationId: org(c),
+      userId: user(c),
+      lang,
+      filters: { q: q.q, supplierId: q.supplierId, status: q.status as PayableStatus[] | undefined, overdueOnly: q.overdueOnly, asOf: q.asOf, from: q.from, to: q.to },
+      dueSoon,
+    }));
+  });
+
+  r.get('/treasury/payables/aging', ...base, requirePermission('payable:read'), validateQuery(agingQuerySchema), async (c) => {
+    const q = c.req.valid('query' as never) as z.infer<typeof agingQuerySchema>;
+    return c.json(toPayablesAgingJSON(await uc.getPayablesAging.execute({ organizationId: org(c), asOf: q.asOf })));
+  });
+
+  r.get('/treasury/payables/aging/export', ...base, requireUser(), requirePermission('payable:export'), validateQuery(exportAgingQuerySchema), async (c) => {
+    const q = c.req.valid('query' as never) as z.infer<typeof exportAgingQuerySchema>;
+    return csvResponse(c, await uc.exportReports.payablesAging({ organizationId: org(c), userId: user(c), lang: q.lang, asOf: q.asOf }));
+  });
+
+  r.get('/treasury/payables/:id', ...base, requirePermission('payable:read'), async (c) =>
+    c.json(toPayableDetailJSON(await uc.getPayableDetail.execute({ organizationId: org(c), payableId: c.req.param('id') }))));
+
+  r.get('/treasury/suppliers/:id/statement', ...base, requirePermission('payable:read'), validateQuery(statementQuerySchema), async (c) => {
+    const q = c.req.valid('query' as never) as z.infer<typeof statementQuerySchema>;
+    return c.json(toSupplierStatementJSON(await uc.getSupplierStatement.execute({ organizationId: org(c), supplierId: c.req.param('id'), asOf: q.asOf })));
+  });
+
+  r.get('/treasury/suppliers/:id/statement/export', ...base, requireUser(), requirePermission('payable:export'), validateQuery(exportStatementQuerySchema), async (c) => {
+    const q = c.req.valid('query' as never) as z.infer<typeof exportStatementQuerySchema>;
+    return csvResponse(c, await uc.exportReports.supplierStatement({ organizationId: org(c), userId: user(c), lang: q.lang, supplierId: c.req.param('id'), asOf: q.asOf }));
+  });
+
+  // Saldos iniciales de deudas: el mismo permiso que los de cartera (`opening_balance:load`), solo Administrador.
+  r.post('/treasury/payable-opening-balances', ...base, requireUser(), requirePermission('opening_balance:load'), validateJson(payableOpeningBalanceSchema), async (c) => {
+    const input = c.req.valid('json' as never) as z.infer<typeof payableOpeningBalanceSchema>;
+    const load = await uc.loadPayableOpeningBalances.execute({ organizationId: org(c), cutoffDate: input.cutoffDate, reason: input.reason, lines: input.lines, userId: user(c) });
+    return c.json(toPayableOpeningLoadJSON(load), 201);
+  });
+
+  r.get('/treasury/payments', ...base, requirePermission('payment:read'), validateQuery(paymentQuerySchema), async (c) => {
+    const q = c.req.valid('query' as never) as z.infer<typeof paymentQuerySchema>;
+    const page = await uc.listPayments.execute({
+      organizationId: org(c),
+      filters: { q: q.q, supplierId: q.supplierId, status: q.status as PaymentStatusT[] | undefined, from: q.from, to: q.to, page: q.page, pageSize: q.pageSize },
+    });
+    return c.json({ ...page, items: page.items.map(toPaymentJSON) });
+  });
+
+  // Configuración de pagos (umbral de aprobación). Antes de `/payments/:id`: «settings» no es un id.
+  r.get('/treasury/payments/settings', ...base, requirePermission('payment:approve'), async (c) =>
+    c.json(toPaymentSettingsJSON(await uc.getPaymentSettings.execute({ organizationId: org(c) }))));
+
+  r.put('/treasury/payments/settings', ...base, requireUser(), requirePermission('payment:approve'), validateJson(paymentSettingsSchema), async (c) => {
+    const input = c.req.valid('json' as never) as z.infer<typeof paymentSettingsSchema>;
+    return c.json(toPaymentSettingsJSON(await uc.setPaymentSettings.execute({ organizationId: org(c), approvalThresholdCents: input.approvalThresholdCents, userId: user(c) })));
+  });
+
+  r.get('/treasury/payments/:id', ...base, requirePermission('payment:read'), async (c) =>
+    c.json(await paymentJSON(uc, org(c), await uc.getPayment.execute({ organizationId: org(c), paymentId: c.req.param('id') }))));
+
+  r.post('/treasury/payments', ...base, requireUser(), requirePermission('payment:create'), validateJson(createPaymentSchema), async (c) => {
+    const { supplierId, ...payment } = c.req.valid('json' as never) as z.infer<typeof createPaymentSchema>;
+    return c.json(await paymentJSON(uc, org(c), await uc.createPayment.execute({ organizationId: org(c), supplierId, userId: user(c), payment: payment as PaymentInput })), 201);
+  });
+
+  r.put('/treasury/payments/:id', ...base, requireUser(), requirePermission('payment:create'), validateJson(updatePaymentSchema), async (c) => {
+    const { expectedVersion, ...payment } = c.req.valid('json' as never) as z.infer<typeof updatePaymentSchema>;
+    return c.json(await paymentJSON(uc, org(c), await uc.updatePayment.execute({ organizationId: org(c), paymentId: c.req.param('id'), userId: user(c), payment: payment as PaymentInput, expectedVersion })));
+  });
+
+  r.post('/treasury/payments/:id/approve', ...base, requireUser(), requirePermission('payment:approve'), async (c) =>
+    c.json(await paymentJSON(uc, org(c), await uc.approvePayment.execute({ organizationId: org(c), paymentId: c.req.param('id'), userId: user(c) }))));
+
+  r.post('/treasury/payments/:id/post', ...base, requireUser(), requirePermission('payment:create'), async (c) =>
+    c.json(await paymentJSON(uc, org(c), await uc.postPayment.execute({ organizationId: org(c), paymentId: c.req.param('id'), userId: user(c) }))));
+
+  r.post('/treasury/payments/:id/void', ...base, requireUser(), requirePermission('payment:void'), validateJson(voidPaymentSchema), async (c) => {
+    const { reason } = c.req.valid('json' as never) as z.infer<typeof voidPaymentSchema>;
+    return c.json(await paymentJSON(uc, org(c), await uc.voidPayment.execute({ organizationId: org(c), paymentId: c.req.param('id'), userId: user(c), reason })));
   });
 
   // ── Recordatorios de cobro ────────────────────────────────────────────────

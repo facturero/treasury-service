@@ -101,6 +101,9 @@ spec:
             # Clientes (server-to-server): los saldos iniciales solo se aceptan a nombre de un cliente que exista.
             - name: CUSTOMER_SERVICE_URL
               value: "http://customer-service-node:3004"
+            # Compras (server-to-server): los pagos solo se aceptan a nombre de un proveedor que exista.
+            - name: PURCHASING_SERVICE_URL
+              value: "http://purchasing-service-node:3017"
             # Organización (server-to-server): el nombre con el que se firma el recordatorio de cobro que le llega al cliente.
             - name: ORGANIZATION_SERVICE_URL
               value: "http://organization-service:3002"

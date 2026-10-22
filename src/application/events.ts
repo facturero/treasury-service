@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { DomainEvent } from '../domain/repositories.js';
 import type { CustomerAdvance, CustomerTerms, OpeningBalanceLoad, Receivable } from '../domain/receivable.js';
 import type { Receipt } from '../domain/receipt.js';
+import type { Payable, PayableOpeningLoad, SupplierAdvance } from '../domain/payable.js';
+import type { Payment, PaymentSettings } from '../domain/payment.js';
 import type { CustomerReminderPlan, ReminderSettings } from '../domain/reminder.js';
 
 /**
@@ -301,16 +303,17 @@ export function reminderSettingsUpdatedEvent(next: ReminderSettings, previous: P
  */
 export function reportExportedEvent(params: {
   organizationId: string;
-  report: 'receivables' | 'aging' | 'statement';
+  report: 'receivables' | 'aging' | 'statement' | 'payables' | 'payables_aging' | 'supplier_statement';
   filters: Record<string, unknown>;
   rowCount: number;
   exportedBy: string;
   customerId?: string;
+  supplierId?: string;
 }): DomainEvent {
   return domainEvent({
     type: 'treasury.report.exported',
     aggregateType: 'report',
-    aggregateId: params.customerId ?? params.report,
+    aggregateId: params.customerId ?? params.supplierId ?? params.report,
     organizationId: params.organizationId,
     payload: {
       report: params.report,
@@ -319,6 +322,171 @@ export function reportExportedEvent(params: {
       rowCount: params.rowCount,
       exportedBy: params.exportedBy,
       ...(params.customerId ? { customerId: params.customerId } : {}),
+      ...(params.supplierId ? { supplierId: params.supplierId } : {}),
     },
+  });
+}
+
+// ── Cuentas por pagar y pagos (bloque D) ─────────────────────────────────────
+
+/** Lo que lleva todo evento de una deuda: qué es, de quién y cuánto. */
+export function payablePayload(p: Payable): Record<string, unknown> {
+  return {
+    payableId: p.id,
+    sourceType: p.sourceType,
+    sourceId: p.sourceId,
+    documentNumber: p.documentNumber,
+    internalNumber: p.internalNumber,
+    supplierId: p.supplierId,
+    supplierName: p.supplierName,
+    supplierIdentification: p.supplierIdentification,
+    amountCents: p.originalCents,
+    currencyCode: p.currencyCode,
+    issueDate: p.issueDate,
+    dueDate: p.dueDate,
+  };
+}
+
+/** Deuda abierta: una factura de compra contabilizada (o un saldo inicial) que la empresa debe. */
+export function payableOpenedEvent(p: Payable): DomainEvent {
+  return domainEvent({ type: 'treasury.payable.opened', aggregateType: 'payable', aggregateId: p.id, organizationId: p.organizationId, payload: payablePayload(p) });
+}
+
+/** Deuda anulada: la factura de compra se anuló. Lleva el motivo, que es lo que explica por qué la deuda desapareció. */
+export function payableCancelledEvent(p: Payable, reason: string | null): DomainEvent {
+  return domainEvent({ type: 'treasury.payable.cancelled', aggregateType: 'payable', aggregateId: p.id, organizationId: p.organizationId, payload: { ...payablePayload(p), reason } });
+}
+
+/** Un pago o una retención redujo la deuda. Un evento por cada importe aplicado, con SU importe. */
+export function payableCreditedEvent(params: {
+  payable: Payable;
+  sourceType: 'payment' | 'withholding';
+  sourceId: string;
+  documentNumber: string | null;
+  appliedCents: number;
+}): DomainEvent {
+  const p = params.payable;
+  return domainEvent({
+    type: 'treasury.payable.credited',
+    aggregateType: 'payable',
+    aggregateId: p.id,
+    organizationId: p.organizationId,
+    payload: {
+      ...payablePayload(p),
+      creditType: params.sourceType,
+      creditSourceId: params.sourceId,
+      creditDocumentNumber: params.documentNumber,
+      appliedCents: params.appliedCents,
+    },
+  });
+}
+
+/** Anticipo a un proveedor: lo pagado de más, que un pago posterior puede consumir. */
+export function supplierAdvanceOpenedEvent(a: SupplierAdvance): DomainEvent {
+  return domainEvent({
+    type: 'treasury.supplier_advance.opened',
+    aggregateType: 'supplier_advance',
+    aggregateId: a.id,
+    organizationId: a.organizationId,
+    payload: {
+      advanceId: a.id,
+      supplierId: a.supplierId,
+      supplierName: a.supplierName,
+      supplierIdentification: a.supplierIdentification,
+      originId: a.originId,
+      documentNumber: a.documentNumber,
+      amountCents: a.originalCents,
+      currencyCode: a.currencyCode,
+    },
+  });
+}
+
+/** Carga de saldos iniciales de deudas a proveedores: qué se cargó, cuánto y por qué. */
+export function payableOpeningLoadedEvent(load: PayableOpeningLoad, supplierCount: number): DomainEvent {
+  return domainEvent({
+    type: 'treasury.payable_opening_balance.loaded',
+    aggregateType: 'payable_opening_load',
+    aggregateId: load.id,
+    organizationId: load.organizationId,
+    payload: { loadId: load.id, cutoffDate: load.cutoffDate, supplierCount, totalCents: load.totalCents, loadedBy: load.loadedBy, reason: load.reason },
+  });
+}
+
+/** Lo que lleva todo evento de un pago: a quién se paga, cuánto salió, cuánto se aplicó y a qué facturas. */
+export function paymentPayload(p: Payment, documentNumbers: Map<string, string | null> = new Map()): Record<string, unknown> {
+  return {
+    paymentId: p.id,
+    number: p.number,
+    status: p.status,
+    supplierId: p.supplierId,
+    supplierName: p.supplierName,
+    supplierIdentification: p.supplierIdentification,
+    paymentDate: p.paymentDate,
+    method: p.method,
+    accountRole: p.accountRole,
+    reference: p.reference,
+    currencyCode: p.currencyCode,
+    totalCents: p.totalCents,
+    advanceUsedCents: p.advanceUsedCents,
+    appliedCents: p.appliedCents,
+    advanceCents: p.advanceCents,
+    lineCount: p.lines.length,
+    lines: p.lines.slice(0, MAX_PAYLOAD_LINES).map((l) => ({ payableId: l.payableId, documentNumber: documentNumbers.get(l.payableId) ?? null, appliedCents: l.appliedCents })),
+    advanceUses: p.advanceUses.slice(0, MAX_PAYLOAD_LINES),
+  };
+}
+
+export function paymentCreatedEvent(p: Payment): DomainEvent {
+  return domainEvent({ type: 'treasury.payment.created', aggregateType: 'payment', aggregateId: p.id, organizationId: p.organizationId, payload: paymentPayload(p) });
+}
+
+export function paymentUpdatedEvent(p: Payment): DomainEvent {
+  return domainEvent({ type: 'treasury.payment.updated', aggregateType: 'payment', aggregateId: p.id, organizationId: p.organizationId, payload: paymentPayload(p) });
+}
+
+/** Pago aprobado por otra persona (separación de funciones): lleva quién lo creó y quién lo aprobó. */
+export function paymentApprovedEvent(p: Payment): DomainEvent {
+  return domainEvent({
+    type: 'treasury.payment.approved',
+    aggregateType: 'payment',
+    aggregateId: p.id,
+    organizationId: p.organizationId,
+    payload: { ...paymentPayload(p), createdBy: p.createdBy, approvedBy: p.approvedBy },
+  });
+}
+
+/**
+ * Pago contabilizado. Es el evento que lee contabilidad para asentar (Dr proveedores y anticipo a proveedores, Cr caja/banco y anticipo
+ * consumido), así que lleva TODO lo que la regla necesita y la fecha del pago como fecha de calendario (`AAAA-MM-DD`, sin hora).
+ */
+export function paymentPostedEvent(p: Payment, documentNumbers: Map<string, string | null>, postedBy: string): DomainEvent {
+  return domainEvent({
+    type: 'treasury.payment.posted',
+    aggregateType: 'payment',
+    aggregateId: p.id,
+    organizationId: p.organizationId,
+    payload: { ...paymentPayload(p, documentNumbers), createdBy: p.createdBy, approvedBy: p.approvedBy, postedBy },
+  });
+}
+
+/** Pago anulado: lleva el MOTIVO y quién lo contabilizó. */
+export function paymentVoidedEvent(p: Payment, documentNumbers: Map<string, string | null>): DomainEvent {
+  return domainEvent({
+    type: 'treasury.payment.voided',
+    aggregateType: 'payment',
+    aggregateId: p.id,
+    organizationId: p.organizationId,
+    payload: { ...paymentPayload(p, documentNumbers), reason: p.voidReason, postedBy: p.postedBy, voidedBy: p.voidedBy, voidedAt: p.voidedAt ? p.voidedAt.toISOString() : null },
+  });
+}
+
+/** El umbral de aprobación de pagos cambió: valor anterior y nuevo (sin los dos la bitácora no dice qué cambió). */
+export function paymentSettingsUpdatedEvent(next: PaymentSettings, previous: Pick<PaymentSettings, 'approvalThresholdCents'>): DomainEvent {
+  return domainEvent({
+    type: 'treasury.payment_settings.updated',
+    aggregateType: 'payment_settings',
+    aggregateId: next.organizationId,
+    organizationId: next.organizationId,
+    payload: { approvalThresholdCents: next.approvalThresholdCents, previousApprovalThresholdCents: previous.approvalThresholdCents, updatedBy: next.updatedBy },
   });
 }

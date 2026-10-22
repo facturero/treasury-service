@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Op, QueryTypes, Transaction, type WhereOptions } from 'sequelize';
 import { withActor } from '@facturero/outbox-relay';
 import { sequelize } from './sequelize.js';
+import { buildPayableRepositories } from './payable-repositories.js';
 import {
   CreditApplicationModel,
   CustomerAdvanceApplicationModel,
@@ -769,6 +770,7 @@ export function buildRepositories(tx?: Transaction): UnitOfWork {
     receiptAdvanceUses: receiptAdvanceUseRepository(tx),
     reminderSettings: reminderSettingsRepository(tx),
     reminders: reminderRepository(tx),
+    ...buildPayableRepositories(tx),
     outbox: outboxRepository(tx),
   };
 }
@@ -786,6 +788,14 @@ export class SequelizeUnitOfWork implements WriteUnitOfWork {
   readonly receiptAdvanceUses;
   readonly reminderSettings;
   readonly reminders;
+  readonly payables;
+  readonly payableApplications;
+  readonly supplierAdvances;
+  readonly payments;
+  readonly paymentAdvanceUses;
+  readonly paymentSettings;
+  readonly unmatchedWithholdings;
+  readonly payableOpeningLoads;
   readonly outbox;
 
   constructor(readonly tx: Transaction) {
@@ -800,6 +810,14 @@ export class SequelizeUnitOfWork implements WriteUnitOfWork {
     this.receiptAdvanceUses = repos.receiptAdvanceUses;
     this.reminderSettings = repos.reminderSettings;
     this.reminders = repos.reminders;
+    this.payables = repos.payables;
+    this.payableApplications = repos.payableApplications;
+    this.supplierAdvances = repos.supplierAdvances;
+    this.payments = repos.payments;
+    this.paymentAdvanceUses = repos.paymentAdvanceUses;
+    this.paymentSettings = repos.paymentSettings;
+    this.unmatchedWithholdings = repos.unmatchedWithholdings;
+    this.payableOpeningLoads = repos.payableOpeningLoads;
     this.outbox = repos.outbox;
   }
 

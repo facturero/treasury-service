@@ -2,6 +2,8 @@ import { zValidator } from '@hono/zod-validator';
 import { z, type ZodSchema } from 'zod';
 import { RECEIVABLE_STATUSES, type ReceivableStatus } from '../../domain/receivable.js';
 import { RECEIPT_METHODS, RECEIPT_STATUSES, type ReceiptStatus } from '../../domain/receipt.js';
+import { PAYABLE_STATUSES, type PayableStatus } from '../../domain/payable.js';
+import { PAYMENT_METHODS, PAYMENT_STATUSES, type PaymentStatus } from '../../domain/payment.js';
 import { ValidationError } from '../../domain/errors.js';
 
 const UUID = z.string().uuid('El identificador no es válido.');
@@ -181,4 +183,106 @@ export const updateReceiptSchema = z.object({ ...receiptBody, expectedVersion: z
 
 export const voidReceiptSchema = z
   .object({ reason: z.string().trim().min(5, 'Indica el motivo de la anulación (mínimo 5 caracteres).').max(300) })
+  .strict();
+
+// ── Cuentas por pagar y pagos (bloque D) ─────────────────────────────────────
+
+const payableStatusList = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const parts = value.split(',').map((x) => x.trim()).filter(Boolean);
+    return parts.length ? parts : undefined;
+  },
+  z.array(z.enum(PAYABLE_STATUSES as unknown as [PayableStatus, ...PayableStatus[]])).min(1).optional(),
+);
+
+export const payableQuerySchema = z.object({
+  q: z.string().trim().max(100).optional(),
+  supplierId: UUID.optional(),
+  status: payableStatusList,
+  overdueOnly: booleanFlag.optional(),
+  /** Solo las que vencen en los próximos 7 días. */
+  dueSoon: booleanFlag.optional(),
+  asOf: LOCAL_DATE.optional(),
+  from: LOCAL_DATE.optional(),
+  to: LOCAL_DATE.optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+export const exportPayablesQuerySchema = payableQuerySchema.omit({ page: true, pageSize: true }).extend({ lang: reportLang });
+
+const paymentStatusList = z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const parts = value.split(',').map((x) => x.trim()).filter(Boolean);
+    return parts.length ? parts : undefined;
+  },
+  z.array(z.enum(PAYMENT_STATUSES as unknown as [PaymentStatus, ...PaymentStatus[]])).min(1).optional(),
+);
+
+export const paymentQuerySchema = z.object({
+  q: z.string().trim().max(100).optional(),
+  supplierId: UUID.optional(),
+  status: paymentStatusList,
+  from: LOCAL_DATE.optional(),
+  to: LOCAL_DATE.optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+const paymentBody = {
+  paymentDate: LOCAL_DATE,
+  method: z.enum(PAYMENT_METHODS as unknown as [string, ...string[]]),
+  accountRole: z.enum(['cash', 'bank']).nullish(),
+  reference: optionalText(100),
+  totalCents: CENTS,
+  lines: z
+    .array(
+      z
+        .object({
+          payableId: UUID,
+          appliedCents: z.number().int('Los importes van en centavos enteros.').positive('Lo aplicado debe ser mayor que cero.').max(Number.MAX_SAFE_INTEGER),
+        })
+        .strict(),
+    )
+    .max(200, 'Un pago admite hasta 200 facturas.'),
+  advanceUses: z
+    .array(
+      z
+        .object({
+          advanceId: UUID,
+          usedCents: z.number().int('Los importes van en centavos enteros.').positive('Lo que se consume debe ser mayor que cero.').max(Number.MAX_SAFE_INTEGER),
+        })
+        .strict(),
+    )
+    .max(50)
+    .optional(),
+  notes: optionalText(500),
+};
+
+/** Alta de un pago (borrador). El proveedor va en el cuerpo: es a quién se paga y no cambia después. */
+export const createPaymentSchema = z.object({ supplierId: UUID, ...paymentBody }).strict();
+export const updatePaymentSchema = z.object({ ...paymentBody, expectedVersion: z.number().int().min(1).optional() }).strict();
+export const voidPaymentSchema = z.object({ reason: z.string().trim().min(5, 'Indica el motivo de la anulación (mínimo 5 caracteres).').max(300) }).strict();
+
+/** Umbral de aprobación: `null` = sin aprobación. */
+export const paymentSettingsSchema = z.object({ approvalThresholdCents: z.number().int('El umbral va en centavos enteros.').positive('El umbral debe ser mayor que cero.').max(Number.MAX_SAFE_INTEGER).nullable() }).strict();
+
+const payableOpeningLineSchema = z
+  .object({
+    supplierId: UUID,
+    documentNumber: optionalText(60),
+    issueDate: LOCAL_DATE,
+    dueDate: LOCAL_DATE.nullish(),
+    amountCents: z.number().int().positive('El importe debe ser mayor que cero.').max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+
+export const payableOpeningBalanceSchema = z
+  .object({
+    cutoffDate: LOCAL_DATE,
+    reason: z.string().trim().min(3, 'Indica el motivo de la carga.').max(300),
+    lines: z.array(payableOpeningLineSchema).min(1, 'La carga necesita al menos una línea.').max(500),
+  })
   .strict();

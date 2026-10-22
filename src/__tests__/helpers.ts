@@ -5,6 +5,8 @@ import type {
   CustomerCatalogPort,
   CustomerInfo,
   OrganizationCatalogPort,
+  SupplierCatalogPort,
+  SupplierInfo,
   UnitOfWorkGateway,
   WriteUnitOfWork,
 } from '../application/ports.js';
@@ -21,6 +23,9 @@ import {
 import type { DomainEvent, Page, ReceiptFilters, ReceivableFilters, UnitOfWork } from '../domain/repositories.js';
 import type { Receipt, ReceiptAdvanceUse } from '../domain/receipt.js';
 import type { ReminderSettings } from '../domain/reminder.js';
+import { derivePayableStatus, type Payable, type PayableApplication, type PayableOpeningLoad, type SupplierAdvance, type UnmatchedWithholding } from '../domain/payable.js';
+import type { Payment, PaymentSettings } from '../domain/payment.js';
+import type { PayableFilters, PaymentFilters } from '../domain/repositories.js';
 import { GetCustomerTermsUseCase, SetCustomerTermsUseCase } from '../application/use-cases/customer-use-cases.js';
 import {
   GetAgingUseCase,
@@ -29,6 +34,31 @@ import {
   GetReceivableUseCase,
   ListReceivablesUseCase,
 } from '../application/use-cases/list-use-cases.js';
+import {
+  HandleBillPostedUseCase,
+  HandleBillVoidedUseCase,
+  HandleWithholdingIssuedUseCase,
+  type BillPostedPayload,
+  type WithholdingIssuedPayload,
+} from '../application/use-cases/payable-event-use-cases.js';
+import {
+  GetPayableDetailUseCase,
+  GetPayablesAgingUseCase,
+  GetSupplierStatementUseCase,
+  ListPayablesUseCase,
+  LoadPayableOpeningBalancesUseCase,
+} from '../application/use-cases/payable-list-use-cases.js';
+import {
+  ApprovePaymentUseCase,
+  CreatePaymentUseCase,
+  GetPaymentSettingsUseCase,
+  GetPaymentUseCase,
+  ListPaymentsUseCase,
+  PostPaymentUseCase,
+  SetPaymentSettingsUseCase,
+  UpdatePaymentUseCase,
+  VoidPaymentUseCase,
+} from '../application/use-cases/payment-use-cases.js';
 import { ExportReportsUseCase } from '../application/use-cases/export-use-cases.js';
 import {
   GetReminderSettingsUseCase,
@@ -58,6 +88,9 @@ export const ORG_B = '22222222-2222-4222-8222-222222222222';
 export const USER_1 = '33333333-3333-4333-8333-333333333333';
 export const CUSTOMER_1 = '44444444-4444-4444-8444-444444444444';
 export const CUSTOMER_2 = '55555555-5555-4555-8555-555555555555';
+export const SUPPLIER_1 = '66666666-6666-4666-8666-666666666666';
+export const SUPPLIER_2 = '77777777-7777-4777-8777-777777777777';
+export const USER_2 = '88888888-8888-4888-8888-888888888888';
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -73,6 +106,15 @@ interface Data {
   receiptAdvanceUses: { receiptId: string; organizationId: string; advanceId: string; usedCents: number; reversedAt: Date | null }[];
   sequences: Map<string, number>;
   reminderSettings: Map<string, ReminderSettings>;
+  payables: Map<string, Payable>;
+  payableApplications: PayableApplication[];
+  supplierAdvances: Map<string, SupplierAdvance>;
+  payments: Map<string, Payment>;
+  paymentAdvanceUses: { paymentId: string; organizationId: string; advanceId: string; usedCents: number; reversedAt: Date | null }[];
+  paymentSequences: Map<string, number>;
+  paymentSettings: Map<string, PaymentSettings>;
+  unmatchedWithholdings: UnmatchedWithholding[];
+  payableOpeningLoads: PayableOpeningLoad[];
   reminders: { organizationId: string; receivableId: string; customerId: string; reminderDate: string; trigger: string; sentBy: string | null }[];
   events: DomainEvent[];
 }
@@ -88,6 +130,15 @@ const emptyData = (): Data => ({
   receiptAdvanceUses: [],
   sequences: new Map(),
   reminderSettings: new Map(),
+  payables: new Map(),
+  payableApplications: [],
+  supplierAdvances: new Map(),
+  payments: new Map(),
+  paymentAdvanceUses: [],
+  paymentSequences: new Map(),
+  paymentSettings: new Map(),
+  unmatchedWithholdings: [],
+  payableOpeningLoads: [],
   reminders: [],
   events: [],
 });
@@ -113,6 +164,14 @@ function buildUnitOfWork(data: Data): UnitOfWork {
     sum(data.receiptAdvanceUses.filter((u) => u.organizationId === organizationId && u.advanceId === id && !u.reversedAt).map((u) => u.usedCents));
   const withApplied = (r: Receivable): Receivable => ({ ...clone(r), appliedCents: appliedByReceivable(r.organizationId, r.id) });
   const advanceWithApplied = (a: CustomerAdvance): CustomerAdvance => ({ ...clone(a), appliedCents: appliedByAdvance(a.organizationId, a.id) });
+
+  const payableApplied = (organizationId: string, id: string) => sum(data.payableApplications.filter((a) => a.organizationId === organizationId && a.payableId === id && !a.reversedAt).map((a) => a.appliedCents));
+  const payableWithApplied = (p: Payable): Payable => ({ ...clone(p), appliedCents: payableApplied(p.organizationId, p.id) });
+  const supplierAdvanceWithApplied = (a: SupplierAdvance): SupplierAdvance => ({
+    ...clone(a),
+    appliedCents: sum(data.paymentAdvanceUses.filter((u) => u.organizationId === a.organizationId && u.advanceId === a.id && !u.reversedAt).map((u) => u.usedCents)),
+  });
+  const payablesOfOrg = (organizationId: string) => [...data.payables.values()].filter((p) => p.organizationId === organizationId && p.supplierId !== '');
 
   const isGhost = (r: Receivable) => r.customerId === '';
   const byOrg = (organizationId: string) => [...data.receivables.values()].filter((r) => r.organizationId === organizationId && !isGhost(r));
@@ -294,6 +353,172 @@ function buildUnitOfWork(data: Data): UnitOfWork {
         for (const u of data.receiptAdvanceUses) if (u.organizationId === organizationId && u.receiptId === receiptId && !u.reversedAt) u.reversedAt = at;
       },
     },
+    payables: {
+      async findById(organizationId, id) {
+        const p = data.payables.get(id);
+        return p && p.organizationId === organizationId ? payableWithApplied(p) : null;
+      },
+      async findBySource(organizationId, sourceType, sourceId) {
+        const p = [...data.payables.values()].find((x) => x.organizationId === organizationId && x.sourceType === sourceType && x.sourceId === sourceId);
+        return p ? payableWithApplied(p) : null;
+      },
+      async listBySupplierIdentification(organizationId, identification) {
+        return [...data.payables.values()].filter((p) => p.organizationId === organizationId && p.supplierIdentification === identification).sort((a, b) => (a.issueDate < b.issueDate ? -1 : 1)).map(payableWithApplied);
+      },
+      async list(organizationId, filters: PayableFilters): Promise<Page<Payable>> {
+        let rows = payablesOfOrg(organizationId);
+        if (filters.supplierId) rows = rows.filter((p) => p.supplierId === filters.supplierId);
+        const live = ['open', 'partial'];
+        const wantsLive = Boolean(filters.overdueOnly || filters.dueBefore);
+        const statuses = wantsLive ? (filters.status?.length ? filters.status.filter((s) => live.includes(s)) : live) : filters.status;
+        if (statuses?.length) rows = rows.filter((p) => statuses.includes(p.status));
+        else if (wantsLive) rows = [];
+        if (filters.overdueOnly && filters.asOf) rows = rows.filter((p) => p.dueDate < filters.asOf!);
+        if (filters.dueBefore && filters.asOf) rows = rows.filter((p) => p.dueDate >= filters.asOf! && p.dueDate <= filters.dueBefore!);
+        if (filters.from) rows = rows.filter((p) => p.issueDate >= filters.from!);
+        if (filters.to) rows = rows.filter((p) => p.issueDate <= filters.to!);
+        if (filters.q?.trim()) {
+          const q = filters.q.trim().toLowerCase();
+          rows = rows.filter((p) => (p.documentNumber ?? '').toLowerCase().includes(q) || (p.internalNumber ?? '').toLowerCase().includes(q) || p.supplierName.toLowerCase().includes(q));
+        }
+        rows.sort((a, b) => (a.dueDate === b.dueDate ? b.createdAt.getTime() - a.createdAt.getTime() : a.dueDate < b.dueDate ? -1 : 1));
+        const start = (filters.page - 1) * filters.pageSize;
+        return { items: rows.slice(start, start + filters.pageSize).map(payableWithApplied), total: rows.length, page: filters.page, pageSize: filters.pageSize };
+      },
+      async listBalances(organizationId, options) {
+        let rows = payablesOfOrg(organizationId);
+        if (options?.supplierId) rows = rows.filter((p) => p.supplierId === options.supplierId);
+        return rows.sort((a, b) => (a.issueDate < b.issueDate ? -1 : 1)).map(payableWithApplied);
+      },
+      async save(payable, expectedVersion) {
+        const existing = data.payables.get(payable.id);
+        if (expectedVersion === undefined) {
+          const dup = [...data.payables.values()].some((x) => x.organizationId === payable.organizationId && x.sourceType === payable.sourceType && x.sourceId === payable.sourceId);
+          if (existing || dup) throw uniqueViolation();
+          data.payables.set(payable.id, { ...clone(payable), appliedCents: 0 });
+          return;
+        }
+        if (!existing || existing.version !== expectedVersion) throw new ConcurrentUpdateError();
+        data.payables.set(payable.id, { ...clone(payable), appliedCents: 0 });
+      },
+    },
+    payableApplications: {
+      async listByPayable(organizationId, ids) {
+        return data.payableApplications.filter((a) => a.organizationId === organizationId && ids.includes(a.payableId)).map(clone);
+      },
+      async add(application) {
+        const dup = data.payableApplications.some((a) => a.organizationId === application.organizationId && a.payableId === application.payableId && a.sourceType === application.sourceType && a.sourceId === application.sourceId);
+        if (dup) throw uniqueViolation();
+        if (application.appliedCents <= 0) throw new Error('CHECK applied_cents > 0');
+        data.payableApplications.push(clone(application));
+      },
+      async reverseBySource(organizationId, sourceType, sourceId, at) {
+        const hit = data.payableApplications.filter((a) => a.organizationId === organizationId && a.sourceType === sourceType && a.sourceId === sourceId && !a.reversedAt);
+        for (const a of hit) a.reversedAt = at;
+        return hit.map((a) => clone(a));
+      },
+    },
+    supplierAdvances: {
+      async findById(organizationId, id) {
+        const a = data.supplierAdvances.get(id);
+        return a && a.organizationId === organizationId ? supplierAdvanceWithApplied(a) : null;
+      },
+      async findByOrigin(organizationId, originId) {
+        const a = [...data.supplierAdvances.values()].find((x) => x.organizationId === organizationId && x.originId === originId);
+        return a ? supplierAdvanceWithApplied(a) : null;
+      },
+      async listBySupplier(organizationId, supplierId) {
+        return [...data.supplierAdvances.values()].filter((a) => a.organizationId === organizationId && a.supplierId === supplierId && !a.voidedAt).map(supplierAdvanceWithApplied);
+      },
+      async save(advance, expectedVersion) {
+        const existing = data.supplierAdvances.get(advance.id);
+        if (expectedVersion === undefined) {
+          const dup = [...data.supplierAdvances.values()].some((x) => x.organizationId === advance.organizationId && x.originId === advance.originId);
+          if (existing || dup) throw uniqueViolation();
+        } else if (!existing || existing.version !== expectedVersion) {
+          throw new ConcurrentUpdateError();
+        }
+        data.supplierAdvances.set(advance.id, { ...clone(advance), appliedCents: 0 });
+      },
+    },
+    payments: {
+      async findById(organizationId, id) {
+        const p = data.payments.get(id);
+        return p && p.organizationId === organizationId ? clone(p) : null;
+      },
+      async list(organizationId, filters: PaymentFilters): Promise<Page<Payment>> {
+        let rows = [...data.payments.values()].filter((p) => p.organizationId === organizationId);
+        if (filters.supplierId) rows = rows.filter((p) => p.supplierId === filters.supplierId);
+        if (filters.status?.length) rows = rows.filter((p) => filters.status!.includes(p.status));
+        if (filters.from) rows = rows.filter((p) => p.paymentDate >= filters.from!);
+        if (filters.to) rows = rows.filter((p) => p.paymentDate <= filters.to!);
+        if (filters.q?.trim()) {
+          const q = filters.q.trim().toLowerCase();
+          rows = rows.filter((p) => (p.number ?? '').toLowerCase().includes(q) || (p.reference ?? '').toLowerCase().includes(q) || p.supplierName.toLowerCase().includes(q));
+        }
+        rows.sort((a, b) => (a.paymentDate === b.paymentDate ? b.createdAt.getTime() - a.createdAt.getTime() : a.paymentDate < b.paymentDate ? 1 : -1));
+        const start = (filters.page - 1) * filters.pageSize;
+        return { items: rows.slice(start, start + filters.pageSize).map(clone), total: rows.length, page: filters.page, pageSize: filters.pageSize };
+      },
+      async save(payment, expectedVersion) {
+        const existing = data.payments.get(payment.id);
+        if (expectedVersion === undefined) {
+          if (existing) throw uniqueViolation();
+        } else if (!existing || existing.version !== expectedVersion) {
+          throw new ConcurrentUpdateError();
+        }
+        if (payment.number && [...data.payments.values()].some((p) => p.id !== payment.id && p.organizationId === payment.organizationId && p.number === payment.number)) throw uniqueViolation();
+        // El CHECK del esquema.
+        if (payment.totalCents + payment.advanceUsedCents !== payment.appliedCents + payment.advanceCents) throw new Error('CHECK payments_amounts_ck');
+        data.payments.set(payment.id, clone(payment));
+      },
+      async nextSequence(organizationId, year) {
+        const key = `${organizationId}:${year}`;
+        const next = (data.paymentSequences.get(key) ?? 0) + 1;
+        data.paymentSequences.set(key, next);
+        return next;
+      },
+    },
+    paymentAdvanceUses: {
+      async add(organizationId, paymentId, use) {
+        if (data.paymentAdvanceUses.some((u) => u.paymentId === paymentId && u.advanceId === use.advanceId)) throw uniqueViolation();
+        data.paymentAdvanceUses.push({ paymentId, organizationId, advanceId: use.advanceId, usedCents: use.usedCents, reversedAt: null });
+      },
+      async reverseByPayment(organizationId, paymentId, at) {
+        for (const u of data.paymentAdvanceUses) if (u.organizationId === organizationId && u.paymentId === paymentId && !u.reversedAt) u.reversedAt = at;
+      },
+    },
+    paymentSettings: {
+      async find(organizationId) {
+        const s = data.paymentSettings.get(organizationId);
+        return s ? clone(s) : null;
+      },
+      async save(settings) {
+        data.paymentSettings.set(settings.organizationId, clone(settings));
+      },
+    },
+    unmatchedWithholdings: {
+      async add(w) {
+        if (data.unmatchedWithholdings.some((x) => x.organizationId === w.organizationId && x.withholdingId === w.withholdingId)) throw uniqueViolation();
+        data.unmatchedWithholdings.push(clone(w));
+      },
+      async listBySupplierIdentification(organizationId, identification) {
+        return data.unmatchedWithholdings.filter((w) => w.organizationId === organizationId && w.supplierIdentification === identification).map(clone);
+      },
+      async remove(organizationId, id) {
+        data.unmatchedWithholdings = data.unmatchedWithholdings.filter((w) => !(w.organizationId === organizationId && w.id === id));
+      },
+    },
+    payableOpeningLoads: {
+      async findByCutoff(organizationId, cutoffDate) {
+        const l = data.payableOpeningLoads.find((x) => x.organizationId === organizationId && x.cutoffDate === cutoffDate);
+        return l ? clone(l) : null;
+      },
+      async save(load) {
+        if (data.payableOpeningLoads.some((x) => x.organizationId === load.organizationId && x.cutoffDate === load.cutoffDate)) throw uniqueViolation();
+        data.payableOpeningLoads.push(clone(load));
+      },
+    },
     reminderSettings: {
       async find(organizationId) {
         const s = data.reminderSettings.get(organizationId);
@@ -331,7 +556,7 @@ function buildUnitOfWork(data: Data): UnitOfWork {
 }
 
 /** Todo lo que una prueba necesita: la base, los casos de uso, la app HTTP y atajos para sembrar y mirar. */
-export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo> | null; accountingDown?: boolean; customersDown?: boolean; customers?: CustomerInfo[] } = {}) {
+export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo> | null; accountingDown?: boolean; customersDown?: boolean; customers?: CustomerInfo[]; suppliersDown?: boolean } = {}) {
   const data = emptyData();
   let now = new Date('2026-10-21T15:00:00.000Z');
   const clock = () => new Date(now);
@@ -379,6 +604,20 @@ export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo>
     },
   };
 
+  const knownSuppliers = new Map<string, SupplierInfo>([
+    [SUPPLIER_1, { id: SUPPLIER_1, legalName: 'PROVEEDOR UNO S.A.', identification: '1790011111001' }],
+    [SUPPLIER_2, { id: SUPPLIER_2, legalName: 'PROVEEDOR DOS CIA. LTDA.', identification: '0992222222001' }],
+  ]);
+  const suppliers: SupplierCatalogPort & { calls: string[]; down: boolean } = {
+    calls: [],
+    down: options.suppliersDown ?? false,
+    async findById(_organizationId, supplierId) {
+      this.calls.push(supplierId);
+      if (this.down) throw new CatalogUnavailableError('No se pudo consultar a los proveedores.');
+      return knownSuppliers.get(supplierId) ?? null;
+    },
+  };
+
   const organizations: OrganizationCatalogPort & { name: string | null; down: boolean } = {
     name: 'MI EMPRESA S.A.',
     down: false,
@@ -391,6 +630,7 @@ export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo>
   const receiptDeps = { gateway, accounting, customers, clock };
   const reminderDeps = { gateway, reads, customers, organizations, clock, timezone: 'America/Guayaquil' };
   const runReminders = new RunRemindersUseCase(reminderDeps);
+  const paymentDeps = { gateway, accounting, suppliers, clock };
   const logs: string[] = [];
   const useCases = {
     createReceipt: new CreateReceiptUseCase(receiptDeps),
@@ -415,8 +655,25 @@ export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo>
     runReminders,
     runDueReminders: new RunDueRemindersUseCase(reads, runReminders, clock, 'America/Guayaquil', (m) => logs.push(m)),
     exportReports: undefined as unknown as ExportReportsUseCase,
+    billPosted: new HandleBillPostedUseCase(gateway, accounting, clock),
+    billVoided: new HandleBillVoidedUseCase(gateway, clock),
+    withholdingIssued: new HandleWithholdingIssuedUseCase(gateway, clock),
+    listPayables: new ListPayablesUseCase(reads, clock, 'America/Guayaquil'),
+    getPayableDetail: new GetPayableDetailUseCase(reads),
+    getPayablesAging: new GetPayablesAgingUseCase(reads, clock, 'America/Guayaquil'),
+    getSupplierStatement: new GetSupplierStatementUseCase(reads, clock, 'America/Guayaquil'),
+    loadPayableOpeningBalances: new LoadPayableOpeningBalancesUseCase(gateway, accounting, suppliers, clock),
+    listPayments: new ListPaymentsUseCase(reads),
+    getPayment: new GetPaymentUseCase(reads),
+    createPayment: new CreatePaymentUseCase(paymentDeps),
+    updatePayment: new UpdatePaymentUseCase(paymentDeps),
+    approvePayment: new ApprovePaymentUseCase(paymentDeps),
+    postPayment: new PostPaymentUseCase(paymentDeps),
+    voidPayment: new VoidPaymentUseCase(paymentDeps),
+    getPaymentSettings: new GetPaymentSettingsUseCase(reads),
+    setPaymentSettings: new SetPaymentSettingsUseCase(gateway, clock),
   };
-  useCases.exportReports = new ExportReportsUseCase(gateway, reads, useCases.getAging, useCases.getStatement, clock, 'America/Guayaquil');
+  useCases.exportReports = new ExportReportsUseCase(gateway, reads, useCases.getAging, useCases.getStatement, clock, 'America/Guayaquil', useCases.getPayablesAging, useCases.getSupplierStatement);
 
   const app = createApp({
     useCases: {
@@ -439,6 +696,20 @@ export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo>
       setReminderSettings: useCases.setReminderSettings,
       previewReminders: useCases.previewReminders,
       runReminders: useCases.runReminders,
+      listPayables: useCases.listPayables,
+      getPayableDetail: useCases.getPayableDetail,
+      getPayablesAging: useCases.getPayablesAging,
+      getSupplierStatement: useCases.getSupplierStatement,
+      loadPayableOpeningBalances: useCases.loadPayableOpeningBalances,
+      listPayments: useCases.listPayments,
+      getPayment: useCases.getPayment,
+      createPayment: useCases.createPayment,
+      updatePayment: useCases.updatePayment,
+      approvePayment: useCases.approvePayment,
+      postPayment: useCases.postPayment,
+      voidPayment: useCases.voidPayment,
+      getPaymentSettings: useCases.getPaymentSettings,
+      setPaymentSettings: useCases.setPaymentSettings,
     },
     corsOrigin: '*',
   });
@@ -466,10 +737,55 @@ export function buildWorld(options: { settings?: Partial<AccountingSettingsInfo>
     };
   };
 
+  /** Una factura de compra contabilizada tal como la publica compras (`purchasing.bill.posted`). Los importes cuadran (subtotal + IVA 15 % = total). */
+  const bill = (overrides: Partial<BillPostedPayload> & { total?: number; supplier?: SupplierInfo } = {}): BillPostedPayload => {
+    const total = overrides.total ?? overrides.totalCents ?? 11500;
+    const subtotal = Math.round(total / 1.15);
+    const { total: _t, supplier: sup, ...rest } = overrides;
+    const supplier = sup ?? knownSuppliers.get(SUPPLIER_1)!;
+    return {
+      organizationId: ORG_A,
+      billId: randomUUID(),
+      internalNumber: `FC-2026-${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`,
+      supplierId: supplier.id,
+      supplier: { identification: supplier.identification, legalName: supplier.legalName },
+      docType: '01',
+      supplierDocument: `001-001-${String(Math.floor(Math.random() * 1e9)).padStart(9, '0')}`,
+      issueDate: '2026-10-21',
+      dueDate: '2026-11-20',
+      currencyCode: 'USD',
+      subtotalCents: subtotal,
+      taxCents: total - subtotal,
+      totalCents: total,
+      lines: [{ subtotalCents: subtotal, vatCents: total - subtotal, iceCents: 0, irbpnrCents: 0 }],
+      ...rest,
+    };
+  };
+  /** Una retención autorizada tal como la publica fiscal (`fiscal.ec.withholding.issued`). */
+  const withholding = (overrides: Partial<WithholdingIssuedPayload> = {}): WithholdingIssuedPayload => ({
+    organizationId: ORG_A,
+    withholdingId: randomUUID(),
+    number: '001-001-000000007',
+    issueDate: '2026-10-22',
+    currencyCode: 'USD',
+    supplier: { identification: knownSuppliers.get(SUPPLIER_1)!.identification },
+    support: { documentCode: '01', number: '001-001-000000123' },
+    totalWithheldCents: 1000,
+    ...overrides,
+  });
+
   return {
     data,
     useCases,
     app,
+    suppliers,
+    knownSuppliers,
+    bill,
+    withholding,
+    payables: (organizationId = ORG_A) => [...data.payables.values()].filter((p) => p.organizationId === organizationId && p.supplierId !== ''),
+    payableOf: (billId: string, organizationId = ORG_A) => [...data.payables.values()].find((p) => p.organizationId === organizationId && p.sourceId === billId),
+    payments: (organizationId = ORG_A) => [...data.payments.values()].filter((p) => p.organizationId === organizationId),
+    derivePayableStatus,
     accounting,
     customers,
     organizations,
@@ -496,4 +812,4 @@ export function headers(permissions: string[] | string, organizationId: string |
   return h;
 }
 
-export const ALL_PERMISSIONS = ['receivable:read', 'customer_terms:manage', 'opening_balance:load', 'receipt:read', 'receipt:create', 'receipt:void', 'receivable:export', 'reminder:manage'];
+export const ALL_PERMISSIONS = ['payable:read', 'payable:export', 'payment:read', 'payment:create', 'payment:approve', 'payment:void', 'receivable:read', 'customer_terms:manage', 'opening_balance:load', 'receipt:read', 'receipt:create', 'receipt:void', 'receivable:export', 'reminder:manage'];

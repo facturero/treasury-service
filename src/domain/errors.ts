@@ -117,3 +117,46 @@ export class RemindersDisabledError extends AppError {
   readonly httpStatus = 409;
   constructor(message = 'Los recordatorios de cobro están apagados: actívalos primero en su configuración.') { super(message); }
 }
+
+// ── Cuentas por pagar y pagos ────────────────────────────────────────────────
+
+export class PayableNotFoundError extends AppError {
+  readonly code = 'PAYABLE_NOT_FOUND';
+  readonly httpStatus = 404;
+  constructor(message = 'Deuda con el proveedor no encontrada.') { super(message); }
+}
+
+export class PaymentNotFoundError extends AppError {
+  readonly code = 'PAYMENT_NOT_FOUND';
+  readonly httpStatus = 404;
+  constructor(message = 'Pago no encontrado.') { super(message); }
+}
+
+/** Una acción que el estado actual del pago no permite (editar uno contabilizado, anular un borrador, contabilizar sin la aprobación…). */
+export class PaymentStateError extends AppError {
+  readonly code = 'INVALID_PAYMENT_STATE';
+  readonly httpStatus = 409;
+  constructor(message: string) { super(message); }
+}
+
+/** El pago llega al umbral de aprobación y todavía no lo aprobó otra persona. */
+export class PaymentApprovalRequiredError extends AppError {
+  readonly code = 'PAYMENT_APPROVAL_REQUIRED';
+  readonly httpStatus = 409;
+  constructor(message = 'Este pago llega al umbral de aprobación: otra persona debe aprobarlo antes de contabilizarlo.') { super(message); }
+}
+
+/** Separación de funciones: quien creó el pago no lo aprueba (ni quien lo aprobó puede ser el mismo que lo creó). */
+export class PaymentSelfApprovalError extends AppError {
+  readonly code = 'PAYMENT_SELF_APPROVAL';
+  readonly httpStatus = 403;
+  constructor(message = 'Quien creó el pago no puede aprobarlo: debe hacerlo otra persona.') { super(message); }
+}
+
+/** El excedente de este pago (un anticipo) ya lo consumió otro pago: hay que anular primero ese. */
+export class PaymentAdvanceInUseError extends AppError {
+  readonly code = 'PAYMENT_ADVANCE_IN_USE';
+  readonly httpStatus = 409;
+  constructor(message = 'El anticipo de este pago ya lo consumió otro pago: anula primero ese pago.') { super(message); }
+}
+

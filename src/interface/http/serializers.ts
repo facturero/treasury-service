@@ -10,6 +10,9 @@ import type {
 } from '../../domain/receivable.js';
 import type { AgingReport, CustomerStatement } from '../../application/use-cases/list-use-cases.js';
 import type { Receipt } from '../../domain/receipt.js';
+import { payableBalanceOf, type Payable, type PayableApplication, type PayableOpeningLoad, type SupplierAdvance, supplierAdvanceBalanceOf } from '../../domain/payable.js';
+import type { Payment, PaymentSettings } from '../../domain/payment.js';
+import type { PayableDetail, PayablesAgingReport, SupplierStatement } from '../../application/use-cases/payable-list-use-cases.js';
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
 
@@ -196,3 +199,112 @@ export function maskEmail(email: string): string {
 }
 
 export const toReminderRunJSON = (r: ReminderRunResult) => ({ ...r });
+
+// ── Cuentas por pagar y pagos (bloque D) ─────────────────────────────────────
+
+export const toPayableJSON = (p: Payable) => ({
+  id: p.id,
+  supplierId: p.supplierId,
+  supplierName: p.supplierName,
+  supplierIdentification: p.supplierIdentification,
+  sourceType: p.sourceType,
+  sourceId: p.sourceId,
+  documentNumber: p.documentNumber,
+  internalNumber: p.internalNumber,
+  issueDate: p.issueDate,
+  dueDate: p.dueDate,
+  currencyCode: p.currencyCode,
+  originalCents: p.originalCents,
+  appliedCents: p.appliedCents,
+  balanceCents: payableBalanceOf(p),
+  status: p.status,
+  version: p.version,
+  createdAt: p.createdAt.toISOString(),
+  updatedAt: p.updatedAt.toISOString(),
+});
+
+export const toPayableApplicationJSON = (a: PayableApplication) => ({
+  id: a.id,
+  payableId: a.payableId,
+  sourceType: a.sourceType,
+  sourceId: a.sourceId,
+  documentNumber: a.documentNumber,
+  appliedCents: a.appliedCents,
+  appliedAt: a.appliedAt,
+  reversedAt: a.reversedAt ? a.reversedAt.toISOString() : null,
+});
+
+export const toSupplierAdvanceJSON = (a: SupplierAdvance) => ({
+  id: a.id,
+  supplierId: a.supplierId,
+  originId: a.originId,
+  documentNumber: a.documentNumber,
+  currencyCode: a.currencyCode,
+  originalCents: a.originalCents,
+  appliedCents: a.appliedCents,
+  balanceCents: supplierAdvanceBalanceOf(a),
+  createdAt: a.createdAt.toISOString(),
+});
+
+export const toPayableDetailJSON = (d: PayableDetail) => ({ ...toPayableJSON(d.payable), applications: d.applications.map(toPayableApplicationJSON) });
+
+export const toSupplierStatementJSON = (s: SupplierStatement) => ({
+  supplierId: s.supplierId,
+  asOf: s.asOf,
+  payableCents: s.payableCents,
+  advanceCents: s.advanceCents,
+  netCents: s.netCents,
+  payables: s.payables.map(toPayableJSON),
+  applications: s.applications.map(toPayableApplicationJSON),
+  advances: s.advances.map(toSupplierAdvanceJSON),
+});
+
+export const toPayablesAgingJSON = (r: PayablesAgingReport) => ({ asOf: r.asOf, totals: r.totals, suppliers: r.suppliers });
+
+export const toPaymentJSON = (p: Payment) => ({
+  id: p.id,
+  number: p.number,
+  status: p.status,
+  supplierId: p.supplierId,
+  supplierName: p.supplierName,
+  supplierIdentification: p.supplierIdentification,
+  paymentDate: p.paymentDate,
+  method: p.method,
+  accountRole: p.accountRole,
+  reference: p.reference,
+  currencyCode: p.currencyCode,
+  totalCents: p.totalCents,
+  advanceUsedCents: p.advanceUsedCents,
+  appliedCents: p.appliedCents,
+  advanceCents: p.advanceCents,
+  lineCount: p.lines.length,
+  lines: p.lines,
+  advanceUses: p.advanceUses,
+  notes: p.notes,
+  voidReason: p.voidReason,
+  createdBy: p.createdBy,
+  approvedBy: p.approvedBy,
+  postedBy: p.postedBy,
+  voidedBy: p.voidedBy,
+  approvedAt: p.approvedAt ? p.approvedAt.toISOString() : null,
+  postedAt: p.postedAt ? p.postedAt.toISOString() : null,
+  voidedAt: p.voidedAt ? p.voidedAt.toISOString() : null,
+  version: p.version,
+  createdAt: p.createdAt.toISOString(),
+  updatedAt: p.updatedAt.toISOString(),
+});
+
+export const toPaymentSettingsJSON = (s: PaymentSettings) => ({
+  approvalThresholdCents: s.approvalThresholdCents,
+  updatedBy: s.updatedBy,
+  updatedAt: s.updatedAt ? s.updatedAt.toISOString() : null,
+});
+
+export const toPayableOpeningLoadJSON = (l: PayableOpeningLoad) => ({
+  id: l.id,
+  cutoffDate: l.cutoffDate,
+  loadedBy: l.loadedBy,
+  reason: l.reason,
+  totalCents: l.totalCents,
+  createdAt: l.createdAt.toISOString(),
+});

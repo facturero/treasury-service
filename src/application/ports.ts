@@ -72,3 +72,20 @@ export interface OrganizationCatalogPort {
   /** Razón social o nombre comercial. `null` = la organización todavía no completó su perfil. */
   getDisplayName(organizationId: string): Promise<string | null>;
 }
+
+/** Lo que tesorería necesita saber de un proveedor para guardarlo en una deuda o un pago. */
+export interface SupplierInfo {
+  id: string;
+  legalName: string;
+  identification: string | null;
+}
+
+/**
+ * Proveedores (purchasing-service), consultados por HTTP server-to-server.
+ *
+ * `null` = el proveedor NO existe en esa organización. Si el servicio no responde se lanza `CatalogUnavailableError` (502): un
+ * catálogo caído no es «no existe».
+ */
+export interface SupplierCatalogPort {
+  findById(organizationId: string, supplierId: string): Promise<SupplierInfo | null>;
+}

@@ -5,6 +5,8 @@ import type {
   CustomerCatalogPort,
   CustomerInfo,
   OrganizationCatalogPort,
+  SupplierCatalogPort,
+  SupplierInfo,
 } from '../../application/ports.js';
 import type { CollectionRole } from '../../domain/accounting-rules.js';
 
@@ -120,5 +122,34 @@ export class HttpOrganizationCatalog implements OrganizationCatalogPort {
     }
     const data = (await response.json()) as { legalName?: string | null; tradeName?: string | null };
     return data.tradeName?.trim() || data.legalName?.trim() || null;
+  }
+}
+
+/**
+ * Proveedores (purchasing-service), server-to-server: pone ella misma las cabeceras que espera del gateway.
+ * 404 es `null` («no existe»); cualquier otra cosa (red, 5xx, 403) es `CatalogUnavailableError`: un pago a nombre de un proveedor que solo
+ * estaba inaccesible dejaría la deuda con nadie.
+ */
+export class HttpSupplierCatalog implements SupplierCatalogPort {
+  constructor(private readonly baseUrl: string) {}
+
+  async findById(organizationId: string, supplierId: string): Promise<SupplierInfo | null> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/purchasing/suppliers/${encodeURIComponent(supplierId)}`, {
+        headers: { 'X-Organization-Id': organizationId, 'X-User-Id': 'treasury-service', 'X-Permissions': 'supplier:read' },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+    } catch (err) {
+      console.warn(`[treasury-service] no se pudo consultar purchasing-service: ${(err as Error).message}`);
+      throw new CatalogUnavailableError('No se pudo consultar a los proveedores. Reintenta en un momento.');
+    }
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      console.warn(`[treasury-service] purchasing-service respondió ${response.status}`);
+      throw new CatalogUnavailableError('No se pudo consultar a los proveedores. Reintenta en un momento.');
+    }
+    const data = (await response.json()) as { id: string; legalName?: string | null; tradeName?: string | null; identification?: string | null };
+    return { id: data.id, legalName: data.legalName ?? data.tradeName ?? '', identification: data.identification ?? null };
   }
 }

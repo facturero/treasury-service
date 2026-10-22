@@ -161,7 +161,8 @@ check('misma fecha de corte → 409', (await call('POST', '/treasury/opening-bal
 check('saldos iniciales sin permiso → 403', (await call('POST', '/treasury/opening-balances', { perms: 'receivable:read', body: { ...ob, cutoffDate: corte(1) } })).status === 403);
 const ob2 = await call('POST', '/treasury/opening-balances', { body: { ...ob, cutoffDate: corte(2), lines: [{ customerId: C1, issueDate: '2026-08-15', amountCents: -5 }] } });
 check('importe negativo → 422', ob2.status === 422, ob2.status);
-const overdue = await call('GET', '/treasury/receivables?overdueOnly=true&pageSize=100');
+// Acotado al cliente de la prueba: la base local acumula cientos de vencidas de corridas anteriores y no caben en una página.
+const overdue = await call('GET', `/treasury/receivables?overdueOnly=true&customerId=${C1}&pageSize=100`);
 check('el saldo inicial vencido aparece en «vencidas»', overdue.json?.items?.some((x) => x.documentNumber === 'ANT-1'));
 
 // 13. un cliente que NO existe en customer-service → 422 con el índice de la línea (no se guarda nada)

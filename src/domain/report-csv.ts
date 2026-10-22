@@ -1,4 +1,5 @@
 import { daysBetween } from './dates.js';
+import { payableBalanceOf, type Payable } from './payable.js';
 import { balanceOf, type Receivable } from './receivable.js';
 
 export type ReportLang = 'es' | 'en' | 'fr';
@@ -139,4 +140,104 @@ export function statementCsv(lang: ReportLang, s: StatementCsvInput): { csv: str
   rows.push([t.net, money(s.netCents)]);
   rows.push([t.advances, money(s.customerAdvanceCents)]);
   return { csv: toCsv(rows), rowCount: s.receivables.length };
+}
+
+// ── Cuentas por pagar (bloque D) ─────────────────────────────────────────────
+
+interface PayableLabels {
+  document: string; internal: string; supplier: string; identification: string; issued: string; due: string; daysOverdue: string;
+  original: string; applied: string; balance: string; status: string; currency: string;
+  aging: { supplier: string; dueSoon: string; current: string; d1: string; d2: string; d3: string; d4: string; total: string; totals: string };
+  statement: { title: string; supplier: string; asOf: string; owed: string; advances: string; net: string };
+  status_: Record<string, string>;
+}
+
+const PAYABLE_LABELS: Record<ReportLang, PayableLabels> = {
+  es: {
+    document: 'Factura del proveedor', internal: 'N.º interno', supplier: 'Proveedor', identification: 'Identificación', issued: 'Emisión', due: 'Vencimiento', daysOverdue: 'Días de atraso',
+    original: 'Importe original', applied: 'Pagado y retenido', balance: 'Saldo', status: 'Estado', currency: 'Moneda',
+    aging: { supplier: 'Proveedor', dueSoon: 'Vence en 7 días', current: 'Corriente', d1: '1 a 30 días', d2: '31 a 60 días', d3: '61 a 90 días', d4: 'Más de 90 días', total: 'Total', totals: 'TOTAL' },
+    statement: { title: 'Estado de cuenta del proveedor', supplier: 'Proveedor', asOf: 'Corte', owed: 'Se le debe', advances: 'Anticipos a proveedores', net: 'Neto' },
+    status_: { open: 'Abierta', partial: 'Parcial', paid: 'Pagada', cancelled: 'Anulada' },
+  },
+  en: {
+    document: 'Supplier invoice', internal: 'Internal no.', supplier: 'Supplier', identification: 'Tax ID', issued: 'Issued', due: 'Due', daysOverdue: 'Days overdue',
+    original: 'Original amount', applied: 'Paid and withheld', balance: 'Balance', status: 'Status', currency: 'Currency',
+    aging: { supplier: 'Supplier', dueSoon: 'Due in 7 days', current: 'Current', d1: '1-30 days', d2: '31-60 days', d3: '61-90 days', d4: 'Over 90 days', total: 'Total', totals: 'TOTAL' },
+    statement: { title: 'Supplier statement', supplier: 'Supplier', asOf: 'As of', owed: 'Owed', advances: 'Supplier advances', net: 'Net' },
+    status_: { open: 'Open', partial: 'Partial', paid: 'Paid', cancelled: 'Cancelled' },
+  },
+  fr: {
+    document: 'Facture du fournisseur', internal: 'N° interne', supplier: 'Fournisseur', identification: 'Identification', issued: 'Émission', due: 'Échéance', daysOverdue: 'Jours de retard',
+    original: 'Montant initial', applied: 'Payé et retenu', balance: 'Solde', status: 'Statut', currency: 'Devise',
+    aging: { supplier: 'Fournisseur', dueSoon: 'Échéance sous 7 jours', current: 'Courant', d1: '1 à 30 jours', d2: '31 à 60 jours', d3: '61 à 90 jours', d4: 'Plus de 90 jours', total: 'Total', totals: 'TOTAL' },
+    statement: { title: 'Relevé du fournisseur', supplier: 'Fournisseur', asOf: 'Arrêté au', owed: 'Dû', advances: 'Avances aux fournisseurs', net: 'Net' },
+    status_: { open: 'Ouverte', partial: 'Partielle', paid: 'Payée', cancelled: 'Annulée' },
+  },
+};
+
+function payableRow(lang: ReportLang, p: Payable, asOf: string): Cell[] {
+  const balance = payableBalanceOf(p);
+  const live = (p.status === 'open' || p.status === 'partial') && balance > 0;
+  return [
+    p.documentNumber, p.internalNumber, p.supplierName, p.supplierIdentification, p.issueDate, p.dueDate,
+    live ? Math.max(0, daysBetween(p.dueDate, asOf)) : 0,
+    money(p.originalCents), money(p.appliedCents), money(balance), PAYABLE_LABELS[lang].status_[p.status] ?? p.status, p.currencyCode,
+  ];
+}
+
+/** Las deudas tal como se ven en pantalla (mismos filtros), una fila por deuda. */
+export function payablesCsv(lang: ReportLang, payables: readonly Payable[], asOf: string): { csv: string; rowCount: number } {
+  const l = PAYABLE_LABELS[lang];
+  const rows: Cell[][] = [[l.document, l.internal, l.supplier, l.identification, l.issued, l.due, l.daysOverdue, l.original, l.applied, l.balance, l.status, l.currency]];
+  for (const p of payables) rows.push(payableRow(lang, p, asOf));
+  return { csv: toCsv(rows), rowCount: payables.length };
+}
+
+export interface PayablesAgingCsvRow {
+  supplierName: string;
+  dueSoonCents: number;
+  currentCents: number;
+  days1To30Cents: number;
+  days31To60Cents: number;
+  days61To90Cents: number;
+  daysOver90Cents: number;
+  totalCents: number;
+}
+
+/** Antigüedad de lo que se debe, por proveedor, con una fila final de totales. */
+export function payablesAgingCsv(lang: ReportLang, suppliers: readonly PayablesAgingCsvRow[], totals: Omit<PayablesAgingCsvRow, 'supplierName'>): { csv: string; rowCount: number } {
+  const l = PAYABLE_LABELS[lang].aging;
+  const line = (name: string, r: Omit<PayablesAgingCsvRow, 'supplierName'>): Cell[] => [name, money(r.dueSoonCents), money(r.currentCents), money(r.days1To30Cents), money(r.days31To60Cents), money(r.days61To90Cents), money(r.daysOver90Cents), money(r.totalCents)];
+  const rows: Cell[][] = [[l.supplier, l.dueSoon, l.current, l.d1, l.d2, l.d3, l.d4, l.total]];
+  for (const s of suppliers) rows.push(line(s.supplierName, s));
+  rows.push(line(l.totals, totals));
+  return { csv: toCsv(rows), rowCount: suppliers.length };
+}
+
+export interface SupplierStatementCsvInput {
+  supplierName: string;
+  asOf: string;
+  payables: readonly Payable[];
+  payableCents: number;
+  advanceCents: number;
+  netCents: number;
+}
+
+/** Estado de cuenta de un proveedor: encabezado, sus deudas y los totales. */
+export function supplierStatementCsv(lang: ReportLang, s: SupplierStatementCsvInput): { csv: string; rowCount: number } {
+  const l = PAYABLE_LABELS[lang];
+  const rows: Cell[][] = [
+    [l.statement.title], [l.statement.supplier, s.supplierName], [l.statement.asOf, s.asOf], [],
+    [l.document, l.internal, l.issued, l.due, l.daysOverdue, l.original, l.applied, l.balance, l.status, l.currency],
+  ];
+  for (const p of s.payables) {
+    const full = payableRow(lang, p, s.asOf);
+    rows.push([full[0]!, full[1]!, full[4]!, full[5]!, full[6]!, full[7]!, full[8]!, full[9]!, full[10]!, full[11]!]);
+  }
+  rows.push([]);
+  rows.push([l.statement.owed, money(s.payableCents)]);
+  rows.push([l.statement.net, money(s.netCents)]);
+  rows.push([l.statement.advances, money(s.advanceCents)]);
+  return { csv: toCsv(rows), rowCount: s.payables.length };
 }

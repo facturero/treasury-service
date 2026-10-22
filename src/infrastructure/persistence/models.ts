@@ -235,6 +235,276 @@ OpeningBalanceLoadModel.init(
   { sequelize, tableName: 'opening_balance_loads', timestamps: false },
 );
 
+// ── Cuentas por pagar y pagos (bloque D) ─────────────────────────────────────
+
+export class PayableModel extends Model<InferAttributes<PayableModel>, InferCreationAttributes<PayableModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare supplier_id: string;
+  declare supplier_name: string;
+  declare supplier_identification: string | null;
+  declare source_type: string;
+  declare source_id: string;
+  declare document_number: string | null;
+  declare internal_number: string | null;
+  declare issue_date: string;
+  declare due_date: string;
+  declare currency_code: string;
+  declare original_cents: string | number;
+  declare status: string;
+  declare version: number;
+  declare created_at: Date;
+  declare updated_at: Date;
+}
+
+PayableModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    supplier_id: { type: DataTypes.CHAR(36), allowNull: false },
+    supplier_name: { type: DataTypes.STRING(300), allowNull: false },
+    supplier_identification: { type: DataTypes.STRING(20), allowNull: true },
+    source_type: { type: DataTypes.STRING(20), allowNull: false },
+    source_id: { type: DataTypes.STRING(64), allowNull: false },
+    document_number: { type: DataTypes.STRING(60), allowNull: true },
+    internal_number: { type: DataTypes.STRING(30), allowNull: true },
+    issue_date: { type: DataTypes.DATEONLY, allowNull: false },
+    due_date: { type: DataTypes.DATEONLY, allowNull: false },
+    currency_code: { type: DataTypes.CHAR(3), allowNull: false },
+    original_cents: { type: DataTypes.BIGINT, allowNull: false },
+    status: { type: DataTypes.STRING(20), allowNull: false },
+    version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'payables', timestamps: false },
+);
+
+export class PayableApplicationModel extends Model<InferAttributes<PayableApplicationModel>, InferCreationAttributes<PayableApplicationModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare payable_id: string;
+  declare source_type: string;
+  declare source_id: string;
+  declare document_number: string | null;
+  declare applied_cents: string | number;
+  declare applied_at: string;
+  declare reversed_at: Date | null;
+  declare created_at: Date;
+}
+
+PayableApplicationModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    payable_id: { type: DataTypes.CHAR(36), allowNull: false },
+    source_type: { type: DataTypes.STRING(20), allowNull: false },
+    source_id: { type: DataTypes.STRING(64), allowNull: false },
+    document_number: { type: DataTypes.STRING(60), allowNull: true },
+    applied_cents: { type: DataTypes.BIGINT, allowNull: false },
+    applied_at: { type: DataTypes.DATEONLY, allowNull: false },
+    reversed_at: { type: DataTypes.DATE, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'payable_applications', timestamps: false },
+);
+
+export class SupplierAdvanceModel extends Model<InferAttributes<SupplierAdvanceModel>, InferCreationAttributes<SupplierAdvanceModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare supplier_id: string;
+  declare supplier_name: string;
+  declare supplier_identification: string | null;
+  declare origin_id: string;
+  declare document_number: string | null;
+  declare currency_code: string;
+  declare original_cents: string | number;
+  declare voided_at: Date | null;
+  declare version: number;
+  declare created_at: Date;
+  declare updated_at: Date;
+}
+
+SupplierAdvanceModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    supplier_id: { type: DataTypes.CHAR(36), allowNull: false },
+    supplier_name: { type: DataTypes.STRING(300), allowNull: false },
+    supplier_identification: { type: DataTypes.STRING(20), allowNull: true },
+    origin_id: { type: DataTypes.CHAR(36), allowNull: false },
+    document_number: { type: DataTypes.STRING(60), allowNull: true },
+    currency_code: { type: DataTypes.CHAR(3), allowNull: false },
+    original_cents: { type: DataTypes.BIGINT, allowNull: false },
+    voided_at: { type: DataTypes.DATE, allowNull: true },
+    version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'supplier_advances', timestamps: false },
+);
+
+export class PaymentModel extends Model<InferAttributes<PaymentModel>, InferCreationAttributes<PaymentModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare number: string | null;
+  declare supplier_id: string;
+  declare supplier_name: string;
+  declare supplier_identification: string | null;
+  declare payment_date: string;
+  declare method: string;
+  declare account_role: string;
+  declare reference: string | null;
+  declare currency_code: string;
+  declare total_cents: string | number;
+  declare advance_used_cents: string | number;
+  declare applied_cents: string | number;
+  declare advance_cents: string | number;
+  declare lines: unknown;
+  declare advance_uses: unknown;
+  declare notes: string | null;
+  declare status: string;
+  declare void_reason: string | null;
+  declare created_by: string;
+  declare approved_by: string | null;
+  declare posted_by: string | null;
+  declare voided_by: string | null;
+  declare approved_at: Date | null;
+  declare posted_at: Date | null;
+  declare voided_at: Date | null;
+  declare version: number;
+  declare created_at: Date;
+  declare updated_at: Date;
+}
+
+PaymentModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    number: { type: DataTypes.STRING(20), allowNull: true },
+    supplier_id: { type: DataTypes.CHAR(36), allowNull: false },
+    supplier_name: { type: DataTypes.STRING(300), allowNull: false },
+    supplier_identification: { type: DataTypes.STRING(20), allowNull: true },
+    payment_date: { type: DataTypes.DATEONLY, allowNull: false },
+    method: { type: DataTypes.STRING(20), allowNull: false },
+    account_role: { type: DataTypes.STRING(10), allowNull: false },
+    reference: { type: DataTypes.STRING(100), allowNull: true },
+    currency_code: { type: DataTypes.CHAR(3), allowNull: false },
+    total_cents: { type: DataTypes.BIGINT, allowNull: false },
+    advance_used_cents: { type: DataTypes.BIGINT, allowNull: false },
+    applied_cents: { type: DataTypes.BIGINT, allowNull: false },
+    advance_cents: { type: DataTypes.BIGINT, allowNull: false },
+    lines: { type: DataTypes.JSON, allowNull: false },
+    advance_uses: { type: DataTypes.JSON, allowNull: true },
+    notes: { type: DataTypes.STRING(500), allowNull: true },
+    status: { type: DataTypes.STRING(10), allowNull: false },
+    void_reason: { type: DataTypes.STRING(300), allowNull: true },
+    created_by: { type: DataTypes.CHAR(36), allowNull: false },
+    approved_by: { type: DataTypes.CHAR(36), allowNull: true },
+    posted_by: { type: DataTypes.CHAR(36), allowNull: true },
+    voided_by: { type: DataTypes.CHAR(36), allowNull: true },
+    approved_at: { type: DataTypes.DATE, allowNull: true },
+    posted_at: { type: DataTypes.DATE, allowNull: true },
+    voided_at: { type: DataTypes.DATE, allowNull: true },
+    version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'payments', timestamps: false },
+);
+
+export class PaymentAdvanceUseModel extends Model<InferAttributes<PaymentAdvanceUseModel>, InferCreationAttributes<PaymentAdvanceUseModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare payment_id: string;
+  declare advance_id: string;
+  declare used_cents: string | number;
+  declare reversed_at: Date | null;
+  declare created_at: Date;
+}
+
+PaymentAdvanceUseModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    payment_id: { type: DataTypes.CHAR(36), allowNull: false },
+    advance_id: { type: DataTypes.CHAR(36), allowNull: false },
+    used_cents: { type: DataTypes.BIGINT, allowNull: false },
+    reversed_at: { type: DataTypes.DATE, allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'payment_advance_uses', timestamps: false },
+);
+
+export class PaymentSettingsModel extends Model<InferAttributes<PaymentSettingsModel>, InferCreationAttributes<PaymentSettingsModel>> {
+  declare organization_id: string;
+  declare approval_threshold_cents: string | number | null;
+  declare updated_by: string | null;
+  declare created_at: Date;
+  declare updated_at: Date;
+}
+
+PaymentSettingsModel.init(
+  {
+    organization_id: { type: DataTypes.CHAR(36), primaryKey: true },
+    approval_threshold_cents: { type: DataTypes.BIGINT, allowNull: true },
+    updated_by: { type: DataTypes.CHAR(36), allowNull: true },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+    updated_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'payment_settings', timestamps: false },
+);
+
+export class UnmatchedWithholdingModel extends Model<InferAttributes<UnmatchedWithholdingModel>, InferCreationAttributes<UnmatchedWithholdingModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare withholding_id: string;
+  declare number: string | null;
+  declare supplier_identification: string;
+  declare support_number: string;
+  declare issue_date: string | null;
+  declare total_withheld_cents: string | number;
+  declare created_at: Date;
+}
+
+UnmatchedWithholdingModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    withholding_id: { type: DataTypes.STRING(64), allowNull: false },
+    number: { type: DataTypes.STRING(60), allowNull: true },
+    supplier_identification: { type: DataTypes.STRING(20), allowNull: false },
+    support_number: { type: DataTypes.STRING(30), allowNull: false },
+    issue_date: { type: DataTypes.DATEONLY, allowNull: true },
+    total_withheld_cents: { type: DataTypes.BIGINT, allowNull: false },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'unmatched_withholdings', timestamps: false },
+);
+
+export class PayableOpeningLoadModel extends Model<InferAttributes<PayableOpeningLoadModel>, InferCreationAttributes<PayableOpeningLoadModel>> {
+  declare id: string;
+  declare organization_id: string;
+  declare cutoff_date: string;
+  declare loaded_by: string;
+  declare reason: string;
+  declare total_cents: string | number;
+  declare created_at: Date;
+}
+
+PayableOpeningLoadModel.init(
+  {
+    id: { type: DataTypes.CHAR(36), primaryKey: true },
+    organization_id: { type: DataTypes.CHAR(36), allowNull: false },
+    cutoff_date: { type: DataTypes.DATEONLY, allowNull: false },
+    loaded_by: { type: DataTypes.CHAR(36), allowNull: false },
+    reason: { type: DataTypes.STRING(300), allowNull: false },
+    total_cents: { type: DataTypes.BIGINT, allowNull: false },
+    created_at: { type: DataTypes.DATE, allowNull: false },
+  },
+  { sequelize, tableName: 'payable_opening_loads', timestamps: false },
+);
+
 export class OutboxModel extends Model<InferAttributes<OutboxModel>, InferCreationAttributes<OutboxModel>> {
   declare id: string;
   declare aggregate_type: string;

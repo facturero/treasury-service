@@ -5,7 +5,7 @@ import { config } from './infrastructure/config.js';
 import { sequelize } from './infrastructure/persistence/sequelize.js';
 import './infrastructure/persistence/models.js';
 import { readOnlyRepositories, SequelizeUnitOfWorkFactory } from './infrastructure/persistence/repositories.js';
-import { HttpAccountingCatalog, HttpCustomerCatalog, HttpOrganizationCatalog } from './infrastructure/catalogs/http-catalogs.js';
+import { HttpAccountingCatalog, HttpCustomerCatalog, HttpOrganizationCatalog, HttpSupplierCatalog } from './infrastructure/catalogs/http-catalogs.js';
 import { buildEventHandlers, startEventConsumers } from './infrastructure/messaging/consumer.js';
 import {
   GetAgingUseCase,
@@ -15,6 +15,24 @@ import {
   ListReceivablesUseCase,
 } from './application/use-cases/list-use-cases.js';
 import { GetCustomerTermsUseCase, SetCustomerTermsUseCase } from './application/use-cases/customer-use-cases.js';
+import {
+  GetPayableDetailUseCase,
+  GetPayablesAgingUseCase,
+  GetSupplierStatementUseCase,
+  ListPayablesUseCase,
+  LoadPayableOpeningBalancesUseCase,
+} from './application/use-cases/payable-list-use-cases.js';
+import {
+  ApprovePaymentUseCase,
+  CreatePaymentUseCase,
+  GetPaymentSettingsUseCase,
+  GetPaymentUseCase,
+  ListPaymentsUseCase,
+  PostPaymentUseCase,
+  SetPaymentSettingsUseCase,
+  UpdatePaymentUseCase,
+  VoidPaymentUseCase,
+} from './application/use-cases/payment-use-cases.js';
 import { ExportReportsUseCase } from './application/use-cases/export-use-cases.js';
 import {
   GetReminderSettingsUseCase,
@@ -50,6 +68,10 @@ async function main(): Promise<void> {
   const getAging = new GetAgingUseCase(repos, clock, config.ORG_TIMEZONE);
   const getStatement = new GetCustomerStatementUseCase(repos, clock, config.ORG_TIMEZONE);
   const runReminders = new RunRemindersUseCase(reminderDeps);
+  const suppliers = new HttpSupplierCatalog(config.PURCHASING_SERVICE_URL);
+  const paymentDeps = { gateway: uow, accounting, suppliers, clock };
+  const getPayablesAging = new GetPayablesAgingUseCase(repos, clock, config.ORG_TIMEZONE);
+  const getSupplierStatement = new GetSupplierStatementUseCase(repos, clock, config.ORG_TIMEZONE);
 
   const app = createApp({
     useCases: {
@@ -67,11 +89,25 @@ async function main(): Promise<void> {
       updateReceipt: new UpdateReceiptUseCase(receiptDeps),
       postReceipt: new PostReceiptUseCase(receiptDeps),
       voidReceipt: new VoidReceiptUseCase(receiptDeps),
-      exportReports: new ExportReportsUseCase(uow, repos, getAging, getStatement, clock, config.ORG_TIMEZONE),
+      exportReports: new ExportReportsUseCase(uow, repos, getAging, getStatement, clock, config.ORG_TIMEZONE, getPayablesAging, getSupplierStatement),
       getReminderSettings: new GetReminderSettingsUseCase(repos),
       setReminderSettings: new SetReminderSettingsUseCase(uow, clock),
       previewReminders: new PreviewRemindersUseCase(reminderDeps),
       runReminders,
+      listPayables: new ListPayablesUseCase(repos, clock, config.ORG_TIMEZONE),
+      getPayableDetail: new GetPayableDetailUseCase(repos),
+      getPayablesAging,
+      getSupplierStatement,
+      loadPayableOpeningBalances: new LoadPayableOpeningBalancesUseCase(uow, accounting, suppliers, clock),
+      listPayments: new ListPaymentsUseCase(repos),
+      getPayment: new GetPaymentUseCase(repos),
+      createPayment: new CreatePaymentUseCase(paymentDeps),
+      updatePayment: new UpdatePaymentUseCase(paymentDeps),
+      approvePayment: new ApprovePaymentUseCase(paymentDeps),
+      postPayment: new PostPaymentUseCase(paymentDeps),
+      voidPayment: new VoidPaymentUseCase(paymentDeps),
+      getPaymentSettings: new GetPaymentSettingsUseCase(repos),
+      setPaymentSettings: new SetPaymentSettingsUseCase(uow, clock),
     },
     corsOrigin: config.CORS_ORIGIN,
   });

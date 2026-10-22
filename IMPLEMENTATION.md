@@ -63,7 +63,8 @@ corrigió **seis defectos reales** que ninguna suite de las que traía el trabaj
 | A.4 prueba de oro (submayor = mayor) | **NO ejecutada** | necesita el asiento de apertura en contabilidad (los saldos iniciales no lo generan) |
 | B cobros (recibos, anticipos, asiento, interfaz) | Hecho y **subido** (2026-10-21) | **235 pruebas** en `treasury-service` y 208 en `accounting-service`; `scripts/verify-receipts.mjs` contra MySQL, RabbitMQ y contabilidad reales (30 cobros simultáneos: exactamente 15 aceptados, sin interbloqueos ni números repetidos; **prueba de oro**: neto por cliente de tesorería = «cuentas por cobrar» del mayor, anticipos de cobros = «anticipos de clientes»); `scripts/local-stack/ui-cobros.cjs` por la interfaz con Administrador, Contador y Vendedor, es/en/fr y 390 px; frontend 393 pruebas, `lint:ui`, `vue-tsc`, `build` |
 | C exportar, imprimir y recordatorios | Hecho en local, **sin commit ni push** (2026-10-22) | **279 pruebas** en `treasury-service` (31 de recordatorios, 13 de exportación), 30 en `notification-service`, 146 del gateway, 398 del frontend; `scripts/verify-reminders.mjs` contra MySQL, RabbitMQ y los servicios reales por el gateway (8 corridas simultáneas → UN evento y UN correo por cliente); `scripts/local-stack/ui-recordatorios.cjs` por la interfaz con tres roles, es/en/fr y 390 px |
-| D, E | Sin empezar | — |
+| D cuentas por pagar y pagos | Hecho en local, **sin commit ni push** (2026-10-22) | **380 pruebas** en `treasury-service` (37 de deudas, 32 de pagos, 32 de HTTP), 230 en `accounting-service` (22 del asiento de pago), 259 en auth, 163 en el gateway, 415 en el frontend; `scripts/verify-payments.mjs` contra MySQL, RabbitMQ y compras reales (30 pagos simultáneos a una deuda → exactamente 10 aceptados, sin interbloqueos ni números repetidos; aprobación entre dos personas; **prueba de oro por proveedor**); `scripts/local-stack/ui-pagos.cjs` por la interfaz con Administrador, Contador (aprobación entre dos personas) y Vendedor, es/en/fr realmente aplicados y 390 px. Hoja de trabajo: `IMPLEMENTATION-D.md` |
+| E | Sin empezar | — |
 
 **Defectos que la revisión encontró (y por qué ninguna prueba los veía):**
 
@@ -92,6 +93,19 @@ Además se añadió la **validación de clientes en saldos iniciales** (`custome
 - **El cliente sin correo no se marca como avisado**: cuando se lo agreguen, el siguiente proceso lo avisa.
 - **Notificaciones solo manda lo que el evento trae** (no consulta a nadie): por eso el evento lleva el correo del cliente y el nombre de quien cobra (`organization-service`). No hay proveedor de preferencias: es un correo al cliente, no a un usuario, igual que las reservas del restaurante.
 
+**Defectos que encontró la verificación del bloque D** (ninguna prueba unitaria los veía):
+
+11. **El Contador veía «Pagar» sobre un pago que exigía aprobación.** No puede leer el umbral (es del Administrador), así que la pantalla no sabía que faltaba la aprobación y el servidor respondía 409. Ahora cada pago trae `requiresApproval`.
+12. Una factura de compra con vencimiento anterior a su emisión (dato absurdo) se corrige al día de emisión: una «vencida» en las pruebas hay que emitirla en el pasado, no solo vencerla.
+13. La verificación en vivo de saldos iniciales buscaba su dato en una página de 100 filas y la base local ya acumulaba 222 vencidas: acota SIEMPRE por el cliente de la prueba.
+
+**Aprendido al construir el bloque D:**
+
+- Tesorería debe aplicar a las facturas de compra los MISMOS filtros que contabilidad (liquidación 03, moneda base, fecha de arranque, automática encendida, subtotal + impuestos = total) o las cuentas por pagar y el libro mayor divergen. Una factura anterior a `auto_posting_from` no abre deuda: para deudas «de hace 20 días» en pruebas se usan saldos iniciales.
+- La unidad de trabajo en memoria de las pruebas **no** sirve para concurrencia (el rollback restaura una copia): los 30 pagos simultáneos van contra MySQL real.
+- El orden de bloqueos (pago → deudas por id → anticipos por id → serie) es el que evita los interbloqueos; se repite en anular.
+- El tercero (`partyType: supplier`) en las líneas de proveedores y de anticipos del asiento de pago es lo que permite cuadrar por proveedor.
+
 **Aprendido al verificar el bloque C:**
 
 - **Orden de despliegue: `notification-service` ANTES que `treasury-service`.** `notification-service` solo se enlaza a los eventos que su `template-config.json` conoce: si tesorería publica `treasury.receivable.overdue` antes de que notificaciones tenga la plantilla, el mensaje no llega a ninguna cola y la partida queda marcada como avisada sin que haya salido el correo. Con los recordatorios apagados por defecto el riesgo es bajo, pero respeta el orden.
@@ -108,6 +122,8 @@ Además se añadió la **validación de clientes en saldos iniciales** (`custome
 - `formatMoney` en español no agrupa miles en 4 cifras (`2000,00`): las pruebas de interfaz deben aceptar ambas formas.
 - El login tiene límite de intentos: reutiliza una sesión por prueba en vez de iniciar sesión cien veces. Encadenar varias pruebas de interfaz seguidas (cada una abre 3 sesiones) lo agota y produce fallos que parecen de la pantalla: espera un par de minutos entre corridas.
 - Dos tablas de bases distintas se cruzan con `COLLATE utf8mb4_unicode_ci` en ambos lados (el servidor MySQL local usa `utf8mb4_0900_ai_ci` por defecto).
+
+**Orden de despliegue del bloque D** (sobre lo ya subido): `auth-service` (migración `20261023100000-add-treasury-payable-permissions`: `payable:read|export`, `payment:read|create|approve|void`) → `accounting-service` (el asiento del pago y su reversa: sin esto, los pagos quedan sin asiento y el submayor deja de cuadrar) → `treasury-service` (migración `20261023100000-create-payables` por su initContainer; variable nueva `PURCHASING_SERVICE_URL`, ya en su `k8s/deployment.yaml`; **la cola `treasury-service.events` se enlaza sola a `purchasing.bill.*` y `fiscal.ec.withholding.issued` al arrancar**) → `api-gateway-node` → `frontend`. Compras y el catálogo de plugins no cambian. Las facturas de compra que ya estaban contabilizadas **no se recuperan solas** (no hay replay): hay que cargarlas como deudas iniciales. Con el umbral de aprobación en NULL (nace así), un despliegue no cambia el comportamiento de nada existente.
 
 **Orden de despliegue del bloque C** (sobre lo ya subido): `auth-service` (migración `20261022100000`: `receivable:export` y `reminder:manage`) → **`notification-service`** (la plantilla `treasury.receivable.overdue`) → `treasury-service` (migración `20261022100000-create-reminders` por su initContainer; variable nueva `ORGANIZATION_SERVICE_URL`, ya en su `k8s/deployment.yaml`) → `api-gateway-node` (rutas de exportar y de recordatorios) → `frontend`. Después, para que le lleguen correos a un cliente de verdad, hace falta el SMTP real en `notification-service` (hoy es Mailtrap) y que los clientes tengan correo.
 
