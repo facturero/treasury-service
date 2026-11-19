@@ -6,7 +6,7 @@ import { PAYABLE_STATUSES, type PayableStatus } from '../../domain/payable.js';
 import { PAYMENT_METHODS, PAYMENT_STATUSES, type PaymentStatus } from '../../domain/payment.js';
 import { ValidationError } from '../../domain/errors.js';
 
-const UUID = z.string().uuid('El identificador no es válido.');
+const UUID = z.string().guid('El identificador no es válido.');
 const LOCAL_DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'La fecha debe tener el formato AAAA-MM-DD.');
 const CENTS = z.number().int('Los importes van en centavos enteros.').min(0, 'El importe no puede ser negativo.').max(Number.MAX_SAFE_INTEGER);
 const optionalText = (max: number) => z.string().trim().max(max).nullish().transform((v) => v || null);
@@ -149,7 +149,7 @@ const receiptBody = {
   receiptDate: LOCAL_DATE,
   method: z.enum(RECEIPT_METHODS as unknown as [string, ...string[]]),
   accountRole: z.enum(['cash', 'bank']).nullish(),
-  bankAccountId: z.string().uuid().nullish(),
+  bankAccountId: z.string().guid().nullish(),
   reference: optionalText(100),
   totalCents: CENTS,
   lines: z
@@ -236,7 +236,7 @@ const paymentBody = {
   paymentDate: LOCAL_DATE,
   method: z.enum(PAYMENT_METHODS as unknown as [string, ...string[]]),
   accountRole: z.enum(['cash', 'bank']).nullish(),
-  bankAccountId: z.string().uuid().nullish(),
+  bankAccountId: z.string().guid().nullish(),
   reference: optionalText(100),
   totalCents: CENTS,
   lines: z
